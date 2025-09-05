@@ -19,7 +19,6 @@ RUN apt-get update \
       libicu-dev \
       libgmp-dev \
       pkg-config \
-      time \
       opam \
       vim \
     && apt-get clean -y
@@ -43,28 +42,28 @@ ARG OCAML_VERSION=4.14.0
 RUN opam init --compiler=$OCAML_VERSION --disable-sandboxing
 RUN opam option depext-run-installs=true
 ENV OPAMYES=1
-RUN opam install --yes batteries zarith stdint yojson dune menhir menhirLib pprint sedlex ppxlib process ppx_deriving ppx_deriving_yojson memtrace mtime visitors uucp wasm fix
+RUN opam install --yes batteries zarith stdint yojson dune menhir menhirLib pprint sedlex ppxlib process ppx_deriving ppx_deriving_yojson memtrace mtime
 
 # Get compiled Z3
-RUN wget -nv https://github.com/Z3Prover/z3/releases/download/z3-4.13.3/z3-4.13.3-x64-glibc-2.35.zip \
- && unzip z3-4.13.3-x64-glibc-2.35.zip \
- && cp z3-4.13.3-x64-glibc-2.35.zip/bin/z3 $HOME/bin/z3 \
- && rm -r z3-4.13.3-*
+RUN wget -nv https://github.com/Z3Prover/z3/releases/download/Z3-4.8.5/z3-4.8.5-x64-ubuntu-16.04.zip \
+ && unzip z3-4.8.5-x64-ubuntu-16.04.zip \
+ && cp z3-4.8.5-x64-ubuntu-16.04/bin/z3 $HOME/bin/z3 \
+ && rm -r z3-4.8.5-*
 
 # Get F* master and build
 RUN eval $(opam env) \
  && source $HOME/.profile \
- && git clone --depth=1 https://github.com/FStarLang/FStar
- #&& cd FStar/ \
- #&& make -j$(nproc) ADMIT=1 \
- #&& ln -s $(realpath bin/fstar.exe) $HOME/bin/fstar.exe
+ && git clone --depth=1 https://github.com/FStarLang/FStar \
+ && cd FStar/ \
+ && make -j$(nproc) ADMIT=1 \
+ && ln -s $(realpath bin/fstar.exe) $HOME/bin/fstar.exe
 
 # Get karamel master and build
 RUN eval $(opam env) \
  && source $HOME/.profile \
- && git clone --depth=1 https://github.com/FStarLang/karamel
- #&& cd karamel/
- #&& make -j$(nproc)
+ && git clone --depth=1 https://github.com/FStarLang/karamel \
+ && cd karamel/ \
+ && make -j$(nproc)
 
 ENV FSTAR_HOME $HOME/FStar
 ENV KRML_HOME $HOME/karamel
@@ -73,4 +72,4 @@ ENV KRML_HOME $HOME/karamel
 # just appends the *call* to eval $(opam env) in these files, so we
 # compute the new environments fter the fact. Calling opam env here
 # would perhaps thrash some variables set by the devcontainer infra.
-#RUN echo 'eval $(opam env --set-switch)' | tee --append $HOME/.bashrc
+RUN echo 'eval $(opam env --set-switch)' | tee --append $HOME/.bashrc

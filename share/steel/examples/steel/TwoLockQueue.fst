@@ -132,30 +132,28 @@ type t (a:Type0) = {
   inv : inv (queue_invariant head tail)
 }
 
-/// Creating a new queue.
+// Move this OUTSIDE new_queue, at top level:
+inline_for_extraction
+let new_qptr (#a:_) (q:Q.t a)
+  : SteelT (q_ptr a) emp (fun qp -> ghost_pts_to qp.ghost half q)
+  =
+  let ptr = alloc_pt q in
+  let ghost = ghost_alloc_pt q in
+  ghost_share_pt ghost;
+  intro_exists _ (fun q -> pts_to ptr full q `star` ghost_pts_to ghost half q);
+  let lock = Steel.SpinLock.new_lock _ in
+  { ptr; ghost; lock }
+
+// Now new_queue becomes closure-free:
 let new_queue (#a:_) (x:a)
   : SteelT (t a) emp (fun _ -> emp)
-  = let new_qptr (#a:_) (q:Q.t a)
-      : SteelT (q_ptr a) emp (fun qp -> ghost_pts_to qp.ghost half q)
-      = // Allocates the concrete pointer.
-        let ptr = alloc_pt q in
-        // Allocates the ghost state, and sets the corresponding lock invariant
-        let ghost = ghost_alloc_pt q in
-        ghost_share_pt ghost;
-        intro_exists _ (fun q -> pts_to ptr full q `star` ghost_pts_to ghost half q);
-        let lock = Steel.SpinLock.new_lock _ in
-        { ptr; ghost; lock}
-    in
-    // Creating a concrete queue
-    let hd = Q.new_queue x in
-    // Creating the head and queue pointers
-    let head = new_qptr hd in
-    let tail = new_qptr hd in
-    // Creating the global queue invariant
-    pack_queue_invariant (hide hd) (hide hd) head tail;
-    let inv = new_invariant _ in
-    // Packing the different components to return a queue, as defined in type `t`
-    return ({ head; tail; inv })
+  =
+  let hd = Q.new_queue x in
+  let head = new_qptr hd in
+  let tail = new_qptr hd in
+  pack_queue_invariant (hide hd) (hide hd) head tail;
+  let inv = new_invariant _ in
+  return ({ head; tail; inv })
 
 #restart-solver
 

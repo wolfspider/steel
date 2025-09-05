@@ -20,8 +20,8 @@ let client (c:ch)
            (ep A c pingpong)
            (fun _ -> ep A c done)
   = // In this implementation, the client first sends the (arbitrarily chosen) integer 17
-    channel_send #A c 17;
+    channel_send #A c 18;
     let y = channel_recv #A c in
     // The protocol specifies that the integer received is greater than the one sent.
     // This fact is available in the context and can be asserted.
-    assert (y > 17)
+    assert (y > 18)

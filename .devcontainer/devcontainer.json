@@ -16,9 +16,9 @@
   "onCreateCommand": {
   },
   // Runs periodically and/or when content of repo changes
-  "updateContentCommand": {
-    "build_plugin": "make ocaml -j$(nproc)"
-  },
+  //"updateContentCommand": {
+  //  "build_plugin": "make ocaml -j$(nproc)"
+  //},
   // These run only when the container is assigned to a user
   "postCreateCommand": {
   }

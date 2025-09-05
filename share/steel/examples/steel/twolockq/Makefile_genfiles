@@ -1,0 +1,59 @@
+# ----- Config -----
+STEEL_HOME ?= ../../../../..
+
+FSTAR      ?= fstar.exe
+OCAMLFIND  ?= ocamlfind
+OCAMLC     ?= ocamlc
+
+# Keep your include; avoid caching the test
+FSTAR_OPTIONS := --already_cached '*,-TwoLockQueueTest' --include ..
+
+# Bring in Steel's F* rules (for $(ALL_FST_FILES), etc.)
+include $(STEEL_HOME)/share/steel/Makefile.include
+
+# ----- Phonies -----
+.PHONY: all ml build run clean clean-local
+
+all: run
+
+# 1) Extract TwoLockQueue and the test to OCaml
+ml: out/.ml.stamp
+
+out/.ml.stamp: $(ALL_FST_FILES) | out
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Queue.Def.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Queue.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out TwoLockQueue.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out TwoLockQueueTest.fst
+	@# Tiny entry point that calls your test function
+	@printf '%s\n' \
+'let () =' \
+'  let _ = TwoLockQueueTest.no_op () in' \
+'  print_endline "TwoLockQueueTest.no_op ran (OCaml)";' \
+> out/Main.ml
+	@touch $@
+
+# 2) Build bytecode with ocamlfind + fstarlib
+#    We first compile each .ml to .cmo (interface deps are handled via .mli/.cmi),
+#    then link them together.
+OCAML_SRCS := $(wildcard out/*.ml)
+OCAML_CMOS := $(patsubst out/%.ml,out/%.cmo,$(OCAML_SRCS))
+
+out/%.cmo: out/%.ml
+	$(OCAMLFIND) $(OCAMLC) -package fstarlib -linkpkg -I out -c $< -o $@
+
+build: ml $(OCAML_CMOS)
+	$(OCAMLFIND) $(OCAMLC) -package fstarlib -linkpkg -I out $(OCAML_CMOS) -o twolockq_ml.byte
+
+# 3) Run it
+run: build
+	./twolockq_ml.byte
+
+# Ensure output dir exists
+out:
+	mkdir -p out
+
+# Use double-colon to avoid clashing with included clean rules
+clean:: clean-local
+
+clean-local:
+	rm -rf out twolockq_ml.byte
