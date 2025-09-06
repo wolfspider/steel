@@ -1,4 +1,4 @@
-all: verify counter llist2 llist3 twolockq
+all: verify counter llist2 llist3 twolockq dplex
 
 # assuming share/steel/examples/steel
 STEEL_HOME ?= ../../../..
@@ -32,6 +32,9 @@ llist3: Selectors.LList3.fst.checked
 twolockq: TwoLockQueue.fst.checked
 	+$(MAKE) -C $@
 
+dplex: Duplex.PingPong.fst.checked
+	+$(MAKE) -C $@
+
 else
 
 llist2:
@@ -40,6 +43,8 @@ llist3:
 
 twolockq:
 
+dplex:
+
 endif
 
-.PHONY: counter llist2 llist3 twolockq
+.PHONY: counter llist2 llist3 twolockq dplex
