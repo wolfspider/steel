@@ -250,17 +250,27 @@ let run_mode3 () =
   watchdog_running := false;
   print_endline "[M3] done."
 
+(* ==== Prims <-> OCaml bridges, fully annotated ==== *)(* helpers only for boundary conversions when you must print a Prims.int *)
+(* nat helpers *)
+(* === helpers: keep OCaml <-> Prims conversions simple === *)
+let nat_of_int (x:int) : Prims.nat = (Obj.magic x : Prims.nat)
+let int_of_nat (n:Prims.nat) : int = (Obj.magic n : int)
+
+(* string-bridge to get floats from Prims.int without Zarith fuss *)
+let f_of_int (i:Prims.int) : float =
+  Stdlib.float_of_string (Prims.string_of_int i)
+
 let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b)
 
-(* ---------------------- MODE 3S: TLQ × PCM stress ---------------------- *)
+(* ---------------------- MODE 3S: TLQ × PCM stress (with stats) ---------------------- *)
 let run_mode3_stress () =
-  (* OCaml ints from env; safe to keep as OCaml ints *)
+  (* OCaml ints from env *)
   let producers =
     try int_of_string (Sys.getenv "PRODUCERS") with _ -> 1 in
   let consumers =
     try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4 in
   let iters =
-    try int_of_string (Sys.getenv "ITERS") with _ -> 100 in
+    try int_of_string (Sys.getenv "ITERS") with _ -> 100_000 in
 
   Printf.printf "[3S] start  producers=%d  consumers=%d  iters/producer=%d\n%!"
     producers consumers iters;
@@ -289,25 +299,35 @@ let run_mode3_stress () =
     Duplex_PCM.channel_send Duplex_PCM.B stepB cB (Obj.magic yi)
   in
 
+  (* per-consumer counts (Prims) to avoid pos/int clashes *)
+  (* OCaml-side metrics *)
+  
+  let incr_nat (a:Prims.nat array) i =
+  let v = int_of_nat a.(i) + (Prims.of_int 1) in
+  a.(i) <- nat_of_int v in
+
+  let counts : Prims.nat array = Array.make consumers (Prims.of_int 0) in
+
   (* consumers: pop & run B-service tasks *)
-  let consumer_loop () =
-    let idle_spins = ref 0 in   (* OCaml int *)
+  let consumer_loop (cid) () =
+    let idle_spins = ref 0 in
     let rec loop () =
       match Q.dequeue q with
       | Some f ->
           idle_spins := 0;
+          incr_nat counts cid;
           f (); Thread.yield (); loop ()
       | None ->
           if get_stop () then (
             incr idle_spins;
-            (* use >! to compare OCaml int vs a literal using Prims ops *)
-            if !idle_spins >! 4 then ()
+            if !idle_spins >! 4 then ()          (* all OCaml ints here *)
             else (Thread.delay 0.05; Thread.yield (); loop ())
           ) else (Thread.delay 0.05; Thread.yield (); loop ())
     in
     loop ()
   in
-  let cons = Array.init consumers (fun _ -> Thread.create consumer_loop ()) in
+  let cons =
+    Array.init consumers (fun cid -> Thread.create (consumer_loop cid) ()) in
 
   (* producers: each does [iters] channel exchanges *)
   let prod =
@@ -334,23 +354,57 @@ let run_mode3_stress () =
   Array.iter Thread.join cons;
   let t1 = Unix.gettimeofday () in
 
-(* ----- Prims-safe totals + OCaml timing/throughput ----- *)
-
-(* total_exchanges (Prims) -> OCaml int -> floats *)
-let total_exchanges_i : Prims.int =
-  (Obj.magic
-     (Prims.op_Multiply (Prims.of_int producers) (Prims.of_int iters))
-   : Prims.int)
+(* ---- stats in Prims.int (your code above these bindings stays the same) ---- *)
+let total_i : Prims.int =
+  Array.fold_left
+    (fun acc k_nat -> Prims.op_Addition acc (Obj.magic k_nat : Prims.int))
+    (Prims.of_int 0)
+    counts
 in
-let total_ocaml : int = (Obj.magic total_exchanges_i : int) in
-let secs  : float = Stdlib.( -. ) t1 t0 in
-Stdlib.Printf.printf
-  "[3S] done  total_exchanges=%s  time=%.3fs\n%!"
-  (Prims.string_of_int total_exchanges_i) secs
 
+let min_i, max_i =
+  let first : Prims.int = (Obj.magic counts.(0) : Prims.int) in
+  Array.fold_left
+    (fun (mn,mx) k_nat ->
+       let ki : Prims.int = (Obj.magic k_nat : Prims.int) in
+       let mn' = if Prims.op_LessThan ki mn then ki else mn in
+       let mx' = if Prims.op_GreaterThan ki mx then ki else mx in
+       (mn', mx'))
+    (first, first)
+    counts
+in
 
+(* ---- isolate float math so it can't unify with Prims ---- *)
+let secs, avg_f, imb_f, rate_f =
+  let secs : float = t1 -. t0 in
+  let avg_f  : float = (f_of_int total_i) /. Stdlib.float_of_int consumers in
+  let imb_f  : float =
+    if Prims.op_Equality max_i (Prims.of_int 0) then 0.0
+    else (f_of_int (Prims.op_Subtraction max_i min_i)) /. (f_of_int max_i) *. 100.0
+  in
+  let rate_f : float =
+    (f_of_int total_i) /. secs
+  in
+  (secs, avg_f, imb_f, rate_f)
+in
 
+(* ---- printing ---- *)
+Printf.printf "=== PCM × TwoLockQueue stress ===\n";
+Printf.printf "producers=%d  consumers=%d  iters/producer=%d\n"
+  producers consumers iters;
 
+Array.iteri
+  (fun i k_nat ->
+     Printf.printf "T%-2d: %s\n" i (Prims.string_of_int (Obj.magic k_nat : Prims.int)))
+  counts;
+
+Printf.printf "total=%s  time=%.3fs  throughput=%.0f ops/s\n%!"
+  (Prims.string_of_int total_i) secs rate_f;
+Printf.printf "min=%s  max=%s  avg=%.1f  imbalance=%.1f%%%%\n%!"
+  (Prims.string_of_int min_i)
+  (Prims.string_of_int max_i)
+  avg_f imb_f;
+()
 
 (* ---------------------- Entry: choose mode ---------------------- *)
 let () =

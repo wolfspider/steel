@@ -78,9 +78,9 @@ let dequeue : 'a . 'a t -> 'a FStar_Pervasives_Native.option =
          (Steel_SpinLock.release () (Obj.magic (hdl.head).lock);
           FStar_Pervasives_Native.None)
      | FStar_Pervasives_Native.Some next ->
-         (Steel_Reference.write_pt () (hdl.head).ptr next;
-          Steel_SpinLock.release () (Obj.magic (hdl.head).lock);
-          (let c = Steel_Reference.read_pt () () hd in
-           let v = c.Queue_Def.data in
-            (* OCaml is GC-managed; free_pt is unsupported -> no-op here *)
-            FStar_Pervasives_Native.Some v)))
+        (Steel_Reference.write_pt () (hdl.head).ptr next;
+         Steel_SpinLock.release () (Obj.magic (hdl.head).lock);
+         (* Read the *new* head node (which was old_head.next) and return its data *)
+         let c_next = Steel_Reference.read_pt () () next in
+         let v = c_next.Queue_Def.data in
+         FStar_Pervasives_Native.Some v))

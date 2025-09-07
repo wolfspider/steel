@@ -3,12 +3,12 @@ module Q = TwoLockQueue
 
 let () =
   (* ---- knobs ---- *)
-  let producers = 4 in
+  let producers = 1 in
   let consumers =
     try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4
   in
   let tasks_per_producer = 100_000 in
-  let drain_spins_after_stop = 2000 in
+  let drain_spins_after_stop = 4 in
   (* ---------------- *)
 
   (* queue of unit->unit tasks; drop the dummy head element *)
@@ -50,8 +50,8 @@ let () =
           if get_stop () then (
             incr idle_spins;
             if !idle_spins > drain_spins_after_stop then ()
-            else (Thread.delay 0.0005; loop ())
-          ) else (Thread.yield (); loop ())
+            else (Thread.delay 0.05; Thread.yield (); loop ())
+          ) else (Thread.delay 0.05; Thread.yield (); loop ())
     in
     loop ()
   in
