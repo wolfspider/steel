@@ -282,7 +282,7 @@ let extend :
        'a -> Prims.nat -> full_heap ->
        (('a, Obj.t) ref, full_heap) Prims.dtuple2 =
   fun pcm x addr1 h ->
-    Printf.printf "[heap] extend: write Addr %s\n%!" (string_of_addr addr1);
+    (* Printf.printf "[heap] extend: write Addr %s\n%!" (string_of_addr addr1); *)
     let r = Addr addr1 in
     let h' = update_addr_full_heap h addr1 (Ref ((), (Obj.magic pcm), (), (Obj.magic x))) in
     Prims.Mkdtuple2 (r, h')

@@ -344,43 +344,31 @@ let (get_a_r :
           let tr' = __proj__V__item___0 p v in
           Steel_Effect_Atomic.return () () tr'
 
-(* put these once near the top of Duplex_PCM.ml (or inline in each fn) *)
-let pr (s:string) = print_endline s
-let int_of_nat (n:Prims.nat) : int = (Obj.magic n : int)     (* F* nat -> OCaml int *)
+let int_of_nat (n:Prims.nat) : int = (Obj.magic n : int)
 let show_nat (n:Prims.nat) : string = string_of_int (int_of_nat n)
 let show_exn (e:exn) = Printexc.to_string e
-
 
 let show_core_ref (r : (Obj.t, Obj.t) Steel_Memory.ref) : string =
   match (Obj.magic r : Steel_Heap.core_ref) with
   | Steel_Heap.Null -> "Null"
   | Steel_Heap.Addr a -> "Addr " ^ string_of_int (Obj.magic a : int)
 
-
 let get_b_r p c next1 tr =
-  Printf.printf "[pcm] get_b_r: will read chan\n%!";
   let _ =
     Steel_Effect_Atomic.as_atomic_action () () ()
       (fun h ->
-         (* extract address *)
          let a =
            match (c : Obj.t chan) with
            | r -> (match r with Steel_Heap.Addr a -> a | Steel_Heap.Null -> failwith "Null chan")
          in
          let has = Steel_Heap.contains_addr h a in
-         Printf.printf "[pcm] get_b_r: heap has addr? %b\n%!" has;
          if not has then failwith "chan missing in heap";
          Prims.Mkdtuple2 ((), h))
   in
   let v = select_refine p c () () in
-  (* your existing projection below… *)
   let tr' = __proj__V__item___0 p v in
   Steel_Effect_Atomic.return () () tr'
 
-
-
-
-(* tiny printers so logs are readable *)
 let pp_tag (p:Steel_Channel_Protocol.tag) =
   if Steel_Channel_Protocol.uu___is_Send p then "Send"
   else if Steel_Channel_Protocol.uu___is_Recv p then "Recv"
@@ -405,16 +393,11 @@ let upd_gen_action
   (f:(Obj.t t, Obj.t, Obj.t, Obj.t) FStar_PCM.frame_preserving_upd)
   : unit
 =
-  Printf.printf "[pcm] upd_gen_action: begin\n%!";
-  (* Wrap the updater to log old/new values *)
   let f_logged (oldv:Obj.t t) : Obj.t t =
-    Printf.printf "[pcm]   old=%s\n%!" (pp_t oldv);
     let newv = f oldv in
-    Printf.printf "[pcm]   new=%s\n%!" (pp_t newv);
     newv
   in
-  Steel_PCMReference.upd_gen (pcm p) r () () f_logged;
-  Printf.printf "[pcm] upd_gen_action: end\n%!"
+  Steel_PCMReference.upd_gen (pcm p) r () () f_logged
 
 let write_a_f_aux p next1 tr x : (Obj.t t, _, _, _) FStar_PCM.frame_preserving_upd =
   fun old ->
@@ -434,11 +417,8 @@ let write_b_f_aux p next1 tr x : (Obj.t t, _, _, _) FStar_PCM.frame_preserving_u
         V { Steel_Channel_Protocol.to1 = next' ; Steel_Channel_Protocol.tr = tr' }
     | _ -> failwith "write_b_f_aux: expected V"
 
-
 let write_a p r next1 tr x =
-  (* post is unused by our extraction path, keeping your call shape *)
   upd_gen_action p r (A_W (next1, tr))
-    (* “v” here is the post we *want*; not consulted by our updater *)
     (if is_send (Steel_Channel_Protocol.step next1 x)
      then A_W (Steel_Channel_Protocol.step next1 x,
                Steel_Channel_Protocol.extend p next1 tr x)
@@ -448,7 +428,6 @@ let write_a p r next1 tr x =
      else A_Fin (Steel_Channel_Protocol.step next1 x,
                  Steel_Channel_Protocol.extend p next1 tr x))
     (write_a_f_aux p next1 tr x)
-;;
 
 let write_b p r next1 tr x =
   upd_gen_action p r (B_W (next1, tr))
@@ -461,7 +440,6 @@ let write_b p r next1 tr x =
      else B_Fin (Steel_Channel_Protocol.step next1 x,
                  Steel_Channel_Protocol.extend p next1 tr x))
     (write_b_f_aux p next1 tr x)
-;;
 
 let (alloc : dprot -> Obj.t t -> Obj.t chan) =
   fun p ->
@@ -506,89 +484,32 @@ let (send_b :
       dprot -> Obj.t -> (Obj.t, Obj.t) Steel_Channel_Protocol.trace -> unit)
   = fun p -> fun c -> fun next1 -> fun x -> fun tr -> write_b p c next1 tr x
 
-  (* F* nat/pos extract to Zarith bigints; print them safely *)
 let show_nat (n:Prims.nat) : string = Z.to_string (Obj.magic n)
 let show_pos (p:Prims.pos) : string = Z.to_string (Obj.magic p)
 
-(* --- helpers for logging / sizes --- *)
-
-(* ---------- debug helpers ---------- *)
 let show_nat (n: Prims.nat) : string =
   string_of_int (Obj.magic n : int)
 
-let dbg (s:string) : unit =
-  FStar_IO.print_string (s ^ "\n")
+let pause () = Thread.yield ()
 
-let dbg_nat (label:string) (n:Prims.nat) : unit =
-  dbg (label ^ show_nat n)
+let rec recv_a p c next1 tr =
+  let tr' = get_a_r p c next1 tr in
+  let to' = Steel_Channel_Protocol.__proj__Mkpartial_trace_of__item__to p tr' in
+  let l_local  : Prims.nat = trace_length p next1 tr in
+  let l_remote : Prims.nat = trace_length p to' tr'.Steel_Channel_Protocol.tr in
+  if l_local >= l_remote then (pause (); recv_a p c next1 tr)
+  else
+    next_message p next1 to' tr tr'.Steel_Channel_Protocol.tr
 
-
-  let rec (recv_a :
-  dprot ->
-    Obj.t chan ->
-      dprot -> (Obj.t, Obj.t) Steel_Channel_Protocol.trace -> Obj.t)
-  =
-  fun p ->
-  fun c ->
-  fun next1 ->
-  fun tr ->
-    let tr' = get_a_r p c next1 tr in
-    let to' =
-      Steel_Channel_Protocol.__proj__Mkpartial_trace_of__item__to p tr'
-    in
-    let l_local  : Prims.nat = trace_length p next1 tr in
-    let l_remote : Prims.nat =
-      trace_length p to' tr'.Steel_Channel_Protocol.tr
-    in
-    dbg ("[pcm] recv_a: l_local=" ^ show_nat l_local ^
-         "  l_remote=" ^ show_nat l_remote);
-    if l_local >= l_remote then (
-      dbg "[pcm] recv_a: spin (no new remote message yet)";
-      recv_a p c next1 tr
-    ) else (
-      let x =
-        next_message p next1 to' tr tr'.Steel_Channel_Protocol.tr
-      in
-      dbg "[pcm] recv_a: got next message";
-      Steel_Effect_Atomic.return () () x
-    )
-
-(* in out/Duplex_PCM.ml *)
-
-(* ---------- updated recv_b with logging ---------- *)
-let rec (recv_b :
-  dprot ->
-    Obj.t chan ->
-      dprot -> (Obj.t, Obj.t) Steel_Channel_Protocol.trace -> Obj.t)
-  =
-  fun p ->
-  fun c ->
-  fun next1 ->
-  fun tr ->
-    pr "[pcm] recv_b: enter";
-    let tr' = get_b_r p c next1 tr in
-    let to' =
-      Steel_Channel_Protocol.__proj__Mkpartial_trace_of__item__to p tr'
-    in
-    let l_local  : Prims.nat = trace_length p next1 tr in
-    let l_remote : Prims.nat =
-      trace_length p to' tr'.Steel_Channel_Protocol.tr
-    in
-    pr ("[pcm] recv_b: l_local=" ^ show_nat l_local ^
-        "  l_remote=" ^ show_nat l_remote);
-    if l_local >= l_remote then (
-      pr "[pcm] recv_b: spin (no new remote message yet)";
-      recv_b p c next1 tr
-    ) else (
-      pr "[pcm] recv_b: computing next_message…";
-      let x =
-        next_message p next1 to' tr tr'.Steel_Channel_Protocol.tr
-      in
-      pr "[pcm] recv_b: next_message ok";
-      Steel_Effect_Atomic.return () () x
-    )
-
-
+let rec recv_b p c next1 tr =
+  let v = select_refine p c () () in
+  let tr' = match v with V tr' -> tr' | _ -> failwith "channel expected V" in
+  let to' = Steel_Channel_Protocol.__proj__Mkpartial_trace_of__item__to p tr' in
+  let l_local  : Prims.nat = trace_length p next1 tr in
+  let l_remote : Prims.nat = trace_length p to' tr'.Steel_Channel_Protocol.tr in
+  if l_local >= l_remote then (pause (); recv_b p c next1 tr)
+  else
+    next_message p next1 to' tr tr'.Steel_Channel_Protocol.tr
 
 let (send_aux :
   dprot ->
@@ -685,20 +606,15 @@ let (pack_trace_ref :
                         (Steel_Channel_Protocol.extend p (Obj.magic next1) tr
                            x)) in
                   Steel_HigherReference.write () ((snd ()) c) w'
-(* --- dbg helpers --- *)
-let _dbg msg = Printf.eprintf "[pcm] %s\n%!" msg
 
 type ch = (dprot, Obj.t channel) Prims.dtuple2
 
 let (new_chan : dprot -> Obj.t chan) =
   fun p ->
-    _dbg "new_chan: start";
     let v =
       V { Steel_Channel_Protocol.to1 = p;
           Steel_Channel_Protocol.tr  = (empty_trace p) } in
-    _dbg "new_chan: V + empty_trace ok";
     let r = alloc p v in
-    _dbg "new_chan: alloc ok";
     split p r v
       (if is_send p then A_W (p, (empty_trace p))
        else if is_recv p then A_R (p, (empty_trace p))
@@ -706,23 +622,16 @@ let (new_chan : dprot -> Obj.t chan) =
       (if is_send p then B_R (p, (empty_trace p))
        else if is_recv p then B_W (p, (empty_trace p))
        else B_Fin (p, (empty_trace p))) () ();
-    _dbg "new_chan: split ok";
     r
 
 let (new_channel' : dprot -> (Obj.t channel * Obj.t channel)) =
   fun p ->
-    _dbg "new_channel': start";
     let v = Prims.Mkdtuple2 (p, (empty_trace p)) in
-    _dbg "new_channel': empty_trace ok";
     let rA = Steel_HigherReference.alloc v in
-    _dbg "new_channel': alloc rA ok";
     let rB = Steel_HigherReference.alloc v in
-    _dbg "new_channel': alloc rB ok";
     let c = new_chan p in
-    _dbg "new_channel': new_chan ok";
     let cA = (c, rA) in
     let cB = (c, rB) in
-    _dbg "new_channel': done";
     Steel_Effect_Atomic.return () () (cA, cB)
 
 let (channel_as_ch : dprot -> party -> Obj.t channel -> dprot -> unit) =
@@ -730,27 +639,19 @@ let (channel_as_ch : dprot -> party -> Obj.t channel -> dprot -> unit) =
 
 let (new_channel : dprot -> (ch * ch)) =
   fun p ->
-    _dbg "new_channel: start";
     let (cA, cB) = new_channel' p in
-    _dbg "new_channel: new_channel' ok";
     channel_as_ch p A cA p;
     channel_as_ch p B cB p;
-    _dbg "new_channel: channel_as_ch ok";
     ((Prims.Mkdtuple2 (p, cA)), (Prims.Mkdtuple2 (p, cB)))
-
-(* in out/Duplex_PCM.ml (or wherever channel_send' is) *)
 
 let (channel_send' :
   party -> dprot -> Obj.t send_next_dprot_t -> Obj.t channel -> Obj.t -> unit)
   =
   fun name p next1 c x ->
     let tr = unpack_trace_ref p name c true (Obj.magic next1) in
-    print_endline "[pcm] channel_send': unpack_trace_ref ok";
     send_aux p name ((fst ()) c) next1 x tr;
-    print_endline "[pcm] channel_send': send_aux ok";
     pack_trace_ref p name c (Prims.Mkdtuple2 (next1, tr)) true
       (Obj.magic next1) tr x
-
 
 let (ch_as_channel : party -> ch -> dprot -> unit) =
   fun _party -> fun _c -> fun _prot -> ()
@@ -761,13 +662,11 @@ let (channel_send :
   fun next1 ->
   fun c ->
   fun x ->
-    _dbg "channel_send: start";
     ch_as_channel name c next1;
     let p = (Prims.__proj__Mkdtuple2__item___1 c) in
     let chan = (FStar_Pervasives.dsnd c) in
     channel_send' name p next1 chan x;
-    channel_as_ch p name chan (Steel_Channel_Protocol.step next1 x);
-    _dbg "channel_send: done"
+    channel_as_ch p name chan (Steel_Channel_Protocol.step next1 x)
 
 let (channel_recv' :
   party -> dprot -> Obj.t recv_next_dprot_t -> Obj.t channel -> Obj.t) =
@@ -775,14 +674,10 @@ let (channel_recv' :
   fun p ->
   fun next1 ->
   fun c ->
-    _dbg "channel_recv': unpack_trace_ref…";
     let tr = unpack_trace_ref p name c false (Obj.magic next1) in
-    _dbg "channel_recv': recv_aux…";
     let x = recv_aux p name ((fst ()) c) next1 tr in
-    _dbg "channel_recv': pack_trace_ref…";
     pack_trace_ref p name c (Prims.Mkdtuple2 (next1, tr)) false
       (Obj.magic next1) tr x;
-    _dbg "channel_recv': done";
     x
 
 let (channel_recv :
@@ -790,13 +685,10 @@ let (channel_recv :
   fun name ->
   fun next1 ->
   fun c ->
-    _dbg "channel_recv: start";
     ch_as_channel name c next1;
     let p    = (Prims.__proj__Mkdtuple2__item___1 c) in
     let chan = (FStar_Pervasives.dsnd c) in
     let x =
       channel_recv' name p next1 chan in
     channel_as_ch p name chan (Steel_Channel_Protocol.step next1 x);
-    _dbg "channel_recv: done";
     Steel_Effect_Atomic.return () () x
-
