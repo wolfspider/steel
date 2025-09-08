@@ -14,7 +14,7 @@
    limitations under the License.
 *)
 
-module PingPong
+module PingPongThr
 open Steel.Memory
 open Steel.Effect.Atomic
 open Steel.Effect
