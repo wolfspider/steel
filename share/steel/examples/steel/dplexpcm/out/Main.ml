@@ -270,7 +270,7 @@ let run_mode3_stress () =
   let consumers =
     try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4 in
   let iters =
-    try int_of_string (Sys.getenv "ITERS") with _ -> 100_000 in
+    try int_of_string (Sys.getenv "ITERS") with _ -> 1_000_000 in
 
   Printf.printf "[3S] start  producers=%d  consumers=%d  iters/producer=%d\n%!"
     producers consumers iters;
@@ -320,7 +320,7 @@ let run_mode3_stress () =
       | None ->
           if get_stop () then (
             incr idle_spins;
-            if !idle_spins >! 4 then ()          (* all OCaml ints here *)
+            if !idle_spins >! 16 then ()          (* all OCaml ints here *)
             else (Thread.delay 0.05; Thread.yield (); loop ())
           ) else (Thread.delay 0.05; Thread.yield (); loop ())
     in
