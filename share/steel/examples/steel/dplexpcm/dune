@@ -1,0 +1,13 @@
+; Compile all modules under this dir (including ./out)
+(include_subdirs unqualified)
+
+(executable
+  (name Main)              ; uses out/Main.ml as the entry point
+  (modules (:standard))    ; picks up out/TwoLockQueue{,Test}.ml, Queue*.ml if present
+  (libraries fstar.lib steel.runtime)
+  (link_flags "-linkall")
+  (modes (native exe))             ; works even without ocamlopt
+)
+
+(env
+  (_ (flags (:standard -w -A))))
