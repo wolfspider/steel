@@ -432,7 +432,7 @@ let run_mode3_eio () =
     let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b) in
 
     (* Plain OCaml ints from env; rename to avoid clashes *)
-    let n_producers = try int_of_string (Sys.getenv "PRODUCERS") with _ -> 1 in
+    let n_producers = try int_of_string (Sys.getenv "PRODUCERS") with _ -> 4 in
     let n_consumers = try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4 in
     let iters       = try int_of_string (Sys.getenv "ITERS")     with _ -> 1_000_000 in
     let n_domains   =
@@ -534,30 +534,31 @@ let run_mode3_eio () =
                 let elt = Prims.op_Addition start k in
                 build_span (elt :: acc) (Prims.op_Addition k (Prims.of_int 1))
             in
-            let span : Prims.int list = build_span [] (Prims.of_int 0) in
+                let span : Prims.int list = build_span [] (Prims.of_int 0) in
 
-              (* iterate each producer in this domain *)
-              Stdlib.List.iter
-                (fun _p ->
-                  for i = 1 to iters do
-                    (* Make a 1-slot reply stream for this request *)
-                    let reply : Prims.int Eio.Stream.t = Eio.Stream.create 1 in
-                  
-                    (* Enqueue a pure task: compute x+42 and push to reply. No Steel heap here. *)
-                    Q.enqueue q (fun () ->
-                      let xi = (Prims.of_int 1 : Prims.int) in
-                      let yi = Prims.op_Addition xi (Prims.of_int 42) in
-                      Eio.Stream.add reply yi
-                    );
-                    
-                    (* Wait for the reply; safe across domains *)
-                    let _y : Prims.int = Eio.Stream.take reply in
-                    
-                    if (i land 0x3FF) = 0 then Domain.cpu_relax ();
-                  done
-                )
-                span
-              )))
+                  (* iterate each producer in this domain *)
+                  Stdlib.List.iter
+                      (fun (_p : Prims.int) ->
+                         (* 1-slot reply stream for THIS producer, reused every iteration *)
+                         let reply : Prims.int Eio.Stream.t = Eio.Stream.create 1 in
+                      
+                         (* Plain OCaml for-loop so i is an int for the bitwise throttle *)
+                         for i = 1 to iters do
+                           (* enqueue cross-domain “RPC”: do x+42 and send to reply *)
+                           let x = Prims.of_int 1 in
+                           Q.enqueue q (fun () ->
+                             let y = Prims.op_Addition x (Prims.of_int 42) in
+                             Eio.Stream.add reply y
+                           );
+                          
+                           (* wait for response; still cross-domain traffic *)
+                           let _y : Prims.int = Eio.Stream.take reply in
+                          
+                           (* cheap throttle so producers don’t starve consumers *)
+                           if (i land 0x3FF) = 0 then Eio.Fiber.yield ();
+                         done
+                      )
+                      span)))
       in
 
       List.iter (fun p -> ignore (Eio.Promise.await_exn p)) prod_ps;
