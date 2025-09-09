@@ -434,7 +434,7 @@ let run_mode3_eio () =
     (* Plain OCaml ints from env; rename to avoid clashes *)
     let n_producers = try int_of_string (Sys.getenv "PRODUCERS") with _ -> 1 in
     let n_consumers = try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4 in
-    let iters       = try int_of_string (Sys.getenv "ITERS")     with _ -> 1000 in
+    let iters       = try int_of_string (Sys.getenv "ITERS")     with _ -> 1_000_000 in
     let n_domains   =
       try int_of_string (Sys.getenv "DOMAINS")
       with _ -> max 1 (Domain.recommended_domain_count ())
@@ -480,6 +480,8 @@ let run_mode3_eio () =
 
     let t0 = Unix.gettimeofday () in
 
+    let served = ref 0 in
+
     Switch.run @@ fun sw ->
       (* ---- Consumers as fibers, no for-loop ---- *)
       let cids = List.init n_consumers (fun i -> i) in
@@ -493,15 +495,18 @@ let run_mode3_eio () =
                    idle := 0;
                    incr_nat counts cid;
                    f ();
+                   if !served land 0x3F = 0  (* every 64 tasks *)
+                   then Eio.Fiber.yield ()
+                   else Domain.cpu_relax ();  (* super cheap on hot path *)
                    Eio.Fiber.yield ();
                    loop ()
                | None ->
                    if get_stop () then (
                      incr idle;
                      if !idle >! 16 then ()
-                     else (Eio.Time.sleep clock 0.005; Eio.Fiber.yield (); loop ())
+                     else (Eio.Fiber.yield (); loop ())
                    ) else (
-                     Eio.Time.sleep clock 0.005; Eio.Fiber.yield (); loop ()
+                     Eio.Fiber.yield (); loop ()
                    )
              in
              loop ()
