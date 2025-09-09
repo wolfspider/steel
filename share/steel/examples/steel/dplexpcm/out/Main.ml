@@ -498,7 +498,7 @@ let run_mode3_eio () =
                | None ->
                    if get_stop () then (
                      incr idle;
-                     if !idle >! 4 then ()
+                     if !idle >! 16 then ()
                      else (Eio.Time.sleep clock 0.005; Eio.Fiber.yield (); loop ())
                    ) else (
                      Eio.Time.sleep clock 0.005; Eio.Fiber.yield (); loop ()
@@ -513,11 +513,24 @@ let run_mode3_eio () =
         List.init n_domains (fun dom_i ->
           Eio.Fiber.fork_promise ~sw (fun () ->
             Eio.Domain_manager.run env#domain_mgr (fun () ->
-              let first = (Prims.of_int dom_i) * (Prims.of_int n_producers) / (Prims.of_int n_domains) in
-              let last  = ((Prims.of_int dom_i + Prims.of_int 1) * Prims.of_int n_producers / Prims.of_int n_domains) - Prims.of_int 1 in
-              let span : Prims.int list =
-                Stdlib.List.init n_producers (fun k -> Prims.op_Addition first (Prims.of_int k))
-              in
+                          (* shard indices using half-open [start, stop) — all in Prims.int *)
+            let start : Prims.int =
+              (Prims.of_int dom_i) * (Prims.of_int n_producers) / (Prims.of_int n_domains)
+            in
+            let stop_excl : Prims.int =
+              ((Prims.of_int dom_i + Prims.of_int 1) * (Prims.of_int n_producers) / (Prims.of_int n_domains))
+            in
+            let count_p : Prims.int = Prims.op_Subtraction stop_excl start in
+            
+            (* build span = [start + 0 ; … ; start + (count-1)] with Prims math only *)
+            let rec build_span acc (k : Prims.int) =
+              if Prims.op_GreaterThanOrEqual k count_p then Stdlib.List.rev acc
+              else
+                let elt = Prims.op_Addition start k in
+                build_span (elt :: acc) (Prims.op_Addition k (Prims.of_int 1))
+            in
+            let span : Prims.int list = build_span [] (Prims.of_int 0) in
+
               (* iterate each producer in this domain *)
               Stdlib.List.iter
                 (fun _p ->
@@ -544,7 +557,7 @@ let run_mode3_eio () =
 
       List.iter (fun p -> ignore (Eio.Promise.await_exn p)) prod_ps;
       set_stop true;
-      Eio.Time.sleep clock 0.05
+      Eio.Time.sleep clock 0.005
     ;
 
     let t1 = Unix.gettimeofday () in
