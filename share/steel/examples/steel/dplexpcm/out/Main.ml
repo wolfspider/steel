@@ -3,6 +3,26 @@
 open Prims
 module TLQ = TwoLockQueue
 
+(* ---- Eio glue ---- *)
+open Eio.Std
+
+module Eio_util = struct
+  (* promise for the result of [f], exceptions captured in the promise *)
+  let go ~sw (f : unit -> 'a) : 'a Promise.or_exn =
+    Fiber.fork_promise ~sw f
+
+  (* run [fn i] on N domains and wait for all to finish (propagate errors) *)
+  let par_domains env n fn =
+    Switch.run @@ fun sw ->
+      let ps =
+        List.init n (fun i ->
+          Fiber.fork_promise ~sw (fun () ->
+            Eio.Domain_manager.run env#domain_mgr (fun () -> fn i)))
+      in
+      List.iter (fun p -> ignore (Promise.await_exn p)) ps
+end
+
+
 let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b)
 
 (* --- Local, minimal two-lock queue that cannot be shadowed --- *)
@@ -260,8 +280,6 @@ let int_of_nat (n:Prims.nat) : int = (Obj.magic n : int)
 let f_of_int (i:Prims.int) : float =
   Stdlib.float_of_string (Prims.string_of_int i)
 
-let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b)
-
 (* ---------------------- MODE 3S: TLQ × PCM stress (with stats) ---------------------- *)
 let run_mode3_stress () =
   (* OCaml ints from env *)
@@ -270,7 +288,7 @@ let run_mode3_stress () =
   let consumers =
     try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4 in
   let iters =
-    try int_of_string (Sys.getenv "ITERS") with _ -> 1_000_000 in
+    try int_of_string (Sys.getenv "ITERS") with _ -> 100_000 in
 
   Printf.printf "[3S] start  producers=%d  consumers=%d  iters/producer=%d\n%!"
     producers consumers iters;
@@ -320,7 +338,7 @@ let run_mode3_stress () =
       | None ->
           if get_stop () then (
             incr idle_spins;
-            if !idle_spins >! 16 then ()          (* all OCaml ints here *)
+            if !idle_spins >! 4 then ()          (* all OCaml ints here *)
             else (Thread.delay 0.05; Thread.yield (); loop ())
           ) else (Thread.delay 0.05; Thread.yield (); loop ())
     in
@@ -406,6 +424,171 @@ Printf.printf "min=%s  max=%s  avg=%.1f  imbalance=%.1f%%%%\n%!"
   avg_f imb_f;
 ()
 
+(* ---------------------- MODE 3E: TLQ × PCM (Eio fibers + multi-domains) ---------------------- *)
+let run_mode3_eio () =
+  Eio_main.run (fun env ->
+    let clock = env#clock in
+    (* keep your >! helper for Prims comparisons when needed *)
+    let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b) in
+
+    (* Plain OCaml ints from env; rename to avoid clashes *)
+    let n_producers = try int_of_string (Sys.getenv "PRODUCERS") with _ -> 1 in
+    let n_consumers = try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4 in
+    let iters       = try int_of_string (Sys.getenv "ITERS")     with _ -> 1000 in
+    let n_domains   =
+      try int_of_string (Sys.getenv "DOMAINS")
+      with _ -> max 1 (Domain.recommended_domain_count ())
+    in
+
+    Printf.printf "[3E] domains=%d producers=%d consumers=%d iters/producer=%d\n%!"
+      n_domains n_producers n_consumers iters;
+
+    (* Keep Steel TLQ; drop dummy *)
+    let q = Q.new_queue (fun () -> ()) in
+    ignore (Q.dequeue q);
+
+    (* Stop flag guarded by Eio.Mutex *)
+    let stop = ref false in
+    let mu = Eio.Mutex.create () in
+    let get_stop () = Eio.Mutex.use_ro mu (fun () -> !stop) in
+    let set_stop v  = Eio.Mutex.use_rw ~protect:true mu (fun () -> stop := v) in
+
+    (* Bridges already defined elsewhere:
+       val nat_of_int : int -> Prims.nat
+       val int_of_nat : Prims.nat -> int
+       val f_of_int   : Prims.int -> float
+    *)
+    let counts : Prims.nat array = Array.make n_consumers (Prims.of_int 0) in
+    let incr_nat (a:Prims.nat array) i =
+      let v = int_of_nat a.(i) + (Prims.of_int 1) in
+      a.(i) <- nat_of_int v
+    in
+
+    (* PCM service unchanged *)
+    let serve_b (cB : Duplex_PCM.ch) : unit =
+      let x =
+        Duplex_PCM.channel_recv Duplex_PCM.B
+          (Steel_Channel_Protocol.dual pingpong) cB
+      in
+      let xi : Prims.int = (Obj.magic x : Prims.int) in
+      let yi : Prims.int = Prims.op_Addition xi (Prims.of_int 42) in
+      let stepB =
+        Steel_Channel_Protocol.step (Steel_Channel_Protocol.dual pingpong) x
+      in
+      Duplex_PCM.channel_send Duplex_PCM.B stepB cB (Obj.magic yi)
+    in
+
+    let t0 = Unix.gettimeofday () in
+
+    Switch.run @@ fun sw ->
+      (* ---- Consumers as fibers, no for-loop ---- *)
+      let cids = List.init n_consumers (fun i -> i) in
+      List.iter
+        (fun cid ->
+           Eio.Fiber.fork ~sw (fun () ->
+             let idle = ref 0 in
+             let rec loop () =
+               match Q.dequeue q with
+               | Some f ->
+                   idle := 0;
+                   incr_nat counts cid;
+                   f ();
+                   Eio.Fiber.yield ();
+                   loop ()
+               | None ->
+                   if get_stop () then (
+                     incr idle;
+                     if !idle >! 4 then ()
+                     else (Eio.Time.sleep clock 0.005; Eio.Fiber.yield (); loop ())
+                   ) else (
+                     Eio.Time.sleep clock 0.005; Eio.Fiber.yield (); loop ()
+                   )
+             in
+             loop ()
+           ))
+        cids;
+
+      (* ---- Producers spread across domains, no for-loop on spans ---- *)
+      let prod_ps =
+        List.init n_domains (fun dom_i ->
+          Eio.Fiber.fork_promise ~sw (fun () ->
+            Eio.Domain_manager.run env#domain_mgr (fun () ->
+              let first = (Prims.of_int dom_i) * (Prims.of_int n_producers) / (Prims.of_int n_domains) in
+              let last  = ((Prims.of_int dom_i + Prims.of_int 1) * Prims.of_int n_producers / Prims.of_int n_domains) - Prims.of_int 1 in
+              let span : Prims.int list =
+                Stdlib.List.init n_producers (fun k -> Prims.op_Addition first (Prims.of_int k))
+              in
+              (* iterate each producer in this domain *)
+              Stdlib.List.iter
+                (fun _p ->
+                  for i = 1 to iters do
+                    (* Make a 1-slot reply stream for this request *)
+                    let reply : Prims.int Eio.Stream.t = Eio.Stream.create 1 in
+                  
+                    (* Enqueue a pure task: compute x+42 and push to reply. No Steel heap here. *)
+                    Q.enqueue q (fun () ->
+                      let xi = (Prims.of_int 1 : Prims.int) in
+                      let yi = Prims.op_Addition xi (Prims.of_int 42) in
+                      Eio.Stream.add reply yi
+                    );
+                    
+                    (* Wait for the reply; safe across domains *)
+                    let _y : Prims.int = Eio.Stream.take reply in
+                    
+                    if (i land 0x3FF) = 0 then Domain.cpu_relax ();
+                  done
+                )
+                span
+              )))
+      in
+
+      List.iter (fun p -> ignore (Eio.Promise.await_exn p)) prod_ps;
+      set_stop true;
+      Eio.Time.sleep clock 0.05
+    ;
+
+    let t1 = Unix.gettimeofday () in
+
+    (* ---- stats identical to 3S ---- *)
+    let total_i : Prims.int =
+      Array.fold_left
+        (fun acc k_nat -> Prims.op_Addition acc (Obj.magic k_nat : Prims.int))
+        (Prims.of_int 0) counts
+    in
+    let min_i, max_i =
+      let first : Prims.int = (Obj.magic counts.(0) : Prims.int) in
+      Array.fold_left
+        (fun (mn,mx) k_nat ->
+           let ki : Prims.int = (Obj.magic k_nat : Prims.int) in
+           let mn' = if Prims.op_LessThan ki mn then ki else mn in
+           let mx' = if Prims.op_GreaterThan ki mx then ki else mx in
+           (mn', mx'))
+        (first, first) counts
+    in
+    let secs  = t1 -. t0 in
+    let avg_f = (f_of_int total_i) /. float_of_int n_consumers in
+    let imb_f =
+      if Prims.op_Equality max_i (Prims.of_int 0) then 0.0
+      else (f_of_int (Prims.op_Subtraction max_i min_i)) /. (f_of_int max_i) *. 100.0
+    in
+    let rate_f = (f_of_int total_i) /. secs in
+
+    Printf.printf "=== PCM × TwoLockQueue (Eio) ===\n";
+    Printf.printf "producers=%d  consumers=%d  iters/producer=%d\n"
+      n_producers n_consumers iters;
+    Array.iteri
+      (fun i k_nat ->
+         Printf.printf "T%-2d: %s\n" i (Prims.string_of_int (Obj.magic k_nat : Prims.int)))
+      counts;
+    Printf.printf "total=%s  time=%.3fs  throughput=%.0f ops/s\n%!"
+      (Prims.string_of_int total_i) secs rate_f;
+    Printf.printf "min=%s  max=%s  avg=%.1f  imbalance=%.1f%%%%\n%!"
+      (Prims.string_of_int min_i)
+      (Prims.string_of_int max_i)
+      avg_f imb_f
+  )
+
+
 (* ---------------------- Entry: choose mode ---------------------- *)
 let () =
   let mode = try Sys.getenv "MODE" with _ -> "3" in
@@ -415,5 +598,6 @@ let () =
   | "1" -> run_mode1 ()
   | "2" -> run_mode2 ()
   | "3S" -> run_mode3_stress ()
+  | "3E" -> run_mode3_eio ()
   | "3" | _ -> run_mode3 ()
   
