@@ -1,27 +1,8 @@
 (* Main.ml — switchable queue (steel vs local), same forensic modes *)
 
 open Prims
-module TLQ = TwoLockQueue
-
-(* ---- Eio glue ---- *)
 open Eio.Std
-
-module Eio_util = struct
-  (* promise for the result of [f], exceptions captured in the promise *)
-  let go ~sw (f : unit -> 'a) : 'a Promise.or_exn =
-    Fiber.fork_promise ~sw f
-
-  (* run [fn i] on N domains and wait for all to finish (propagate errors) *)
-  let par_domains env n fn =
-    Switch.run @@ fun sw ->
-      let ps =
-        List.init n (fun i ->
-          Fiber.fork_promise ~sw (fun () ->
-            Eio.Domain_manager.run env#domain_mgr (fun () -> fn i)))
-      in
-      List.iter (fun p -> ignore (Promise.await_exn p)) ps
-end
-
+module TLQ = TwoLockQueue
 
 let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b)
 
@@ -80,7 +61,7 @@ type t0 = Seed | Work of Prims.int  (* use Prims.int so we stay consistent *)
 type t1 = Seed1 | Work1 of (unit -> unit)
 
 (* ---------------------- PCM ping→pong protocol ---------------------- *)
-let (pingpong : Duplex_PCM.dprot) =
+let (grendel : Duplex_PCM.dprot) =
   Duplex_PCM.bind (Duplex_PCM.send ())
     (fun _x -> Duplex_PCM.bind (Duplex_PCM.recv ()) (fun _y -> Duplex_PCM.done1))
 
@@ -218,13 +199,13 @@ let run_mode3 () =
     print_endline "[B] waiting to recv x";
     let x =
       Duplex_PCM.channel_recv Duplex_PCM.B
-        (Steel_Channel_Protocol.dual pingpong) cB
+        (Steel_Channel_Protocol.dual grendel) cB
     in
     b_after_recv := true; print_endline "[B] recv ok"; flush stdout;
     let xi : Prims.int = (Obj.magic x : Prims.int) in
     let yi : Prims.int = Prims.op_Addition xi (Prims.of_int 42) in
     let stepB =
-      Steel_Channel_Protocol.step (Steel_Channel_Protocol.dual pingpong) x
+      Steel_Channel_Protocol.step (Steel_Channel_Protocol.dual grendel) x
     in
     Thread.delay 0.010;
     print_endline "[B] sending y";
@@ -249,14 +230,14 @@ let run_mode3 () =
   let pth =
     Thread.create
       (fun () ->
-        let (cA1, cB1) = Duplex_PCM.new_channel pingpong in
+        let (cA1, cB1) = Duplex_PCM.new_channel grendel in
         print_endline "[A] ENQ B task"; Q.enqueue q (fun () -> serve_b cB1);
         Thread.yield (); Thread.delay 0.010;
         print_endline "[A] sending x=1";
         let x_any = (Obj.magic (Prims.of_int 1) : Obj.t) in
-        Duplex_PCM.channel_send Duplex_PCM.A pingpong cA1 x_any;
+        Duplex_PCM.channel_send Duplex_PCM.A grendel cA1 x_any;
         a_sent := true; print_endline "[A] send ok";
-        let stepA1 = Steel_Channel_Protocol.step pingpong x_any in
+        let stepA1 = Steel_Channel_Protocol.step grendel x_any in
         print_endline "[A] waiting to recv y";
         let _ = Duplex_PCM.channel_recv Duplex_PCM.A stepA1 cA1 in
         print_endline "[A] recv ok"
@@ -307,12 +288,12 @@ let run_mode3_stress () =
   let serve_b (cB : Duplex_PCM.ch) : unit =
     let x =
       Duplex_PCM.channel_recv Duplex_PCM.B
-        (Steel_Channel_Protocol.dual pingpong) cB
+        (Steel_Channel_Protocol.dual grendel) cB
     in
     let xi : Prims.int = (Obj.magic x : Prims.int) in
     let yi : Prims.int = Prims.op_Addition xi (Prims.of_int 42) in
     let stepB =
-      Steel_Channel_Protocol.step (Steel_Channel_Protocol.dual pingpong) x
+      Steel_Channel_Protocol.step (Steel_Channel_Protocol.dual grendel) x
     in
     Duplex_PCM.channel_send Duplex_PCM.B stepB cB (Obj.magic yi)
   in
@@ -353,12 +334,12 @@ let run_mode3_stress () =
       Thread.create
         (fun () ->
           for i = 1 to iters do
-            let (cA, cB) = Duplex_PCM.new_channel pingpong in
+            let (cA, cB) = Duplex_PCM.new_channel grendel in
             Q.enqueue q (fun () -> serve_b cB);
             Thread.yield ();
             let x_any = (Obj.magic (Prims.of_int 1) : Obj.t) in
-            Duplex_PCM.channel_send Duplex_PCM.A pingpong cA x_any;
-            let stepA = Steel_Channel_Protocol.step pingpong x_any in
+            Duplex_PCM.channel_send Duplex_PCM.A grendel cA x_any;
+            let stepA = Steel_Channel_Protocol.step grendel x_any in
             let _y = Duplex_PCM.channel_recv Duplex_PCM.A stepA cA in
             if (i land 0x3FF) = 0 then Thread.yield ();
           done)
@@ -431,14 +412,15 @@ type req =
 (* ---------------------- MODE 3E: TLQ × PCM (Eio fibers + multi-domains) ---------------------- *)
 let run_mode3_eio () =
   Eio_main.run (fun env ->
+    Eio.traceln "Eio backend = %s" (Eio.Stdenv.backend_id env);
     let clock = env#clock in
     (* keep your >! helper for Prims comparisons when needed *)
     let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b) in
 
     (* Plain OCaml ints from env; rename to avoid clashes *)
     let n_producers = try int_of_string (Sys.getenv "PRODUCERS") with _ -> 1 in
-    let n_consumers = try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4 in
-    let iters       = try int_of_string (Sys.getenv "ITERS")     with _ -> 1_000_000 in
+    let n_consumers = try int_of_string (Sys.getenv "CONSUMERS") with _ -> 8 in
+    let iters       = try int_of_string (Sys.getenv "ITERS")     with _ -> 4_000_000 in
     let n_domains   =
       try int_of_string (Sys.getenv "DOMAINS")
       with _ -> max 1 (Domain.recommended_domain_count ())
@@ -472,12 +454,12 @@ let run_mode3_eio () =
     let serve_b (cB : Duplex_PCM.ch) : unit =
       let x =
         Duplex_PCM.channel_recv Duplex_PCM.B
-          (Steel_Channel_Protocol.dual pingpong) cB
+          (Steel_Channel_Protocol.dual grendel) cB
       in
       let xi : Prims.int = (Obj.magic x : Prims.int) in
       let yi : Prims.int = Prims.op_Addition xi (Prims.of_int 42) in
       let stepB =
-        Steel_Channel_Protocol.step (Steel_Channel_Protocol.dual pingpong) x
+        Steel_Channel_Protocol.step (Steel_Channel_Protocol.dual grendel) x
       in
       Duplex_PCM.channel_send Duplex_PCM.B stepB cB (Obj.magic yi)
     in
@@ -496,10 +478,10 @@ let run_mode3_eio () =
           let rec serve_loop () =
             match Eio.Stream.take reqs with
             | Request { x; reply } ->
-                let (cA, cB) = Duplex_PCM.new_channel pingpong in
+                let (cA, cB) = Duplex_PCM.new_channel grendel in
                 let x_any : Obj.t = (Obj.magic x : Obj.t) in
-                Duplex_PCM.channel_send Duplex_PCM.A pingpong cA x_any;
-                let stepA = Steel_Channel_Protocol.step pingpong x_any in
+                Duplex_PCM.channel_send Duplex_PCM.A grendel cA x_any;
+                let stepA = Steel_Channel_Protocol.step grendel x_any in
                 serve_b cB;
                 let y_any = Duplex_PCM.channel_recv Duplex_PCM.A stepA cA in
                 Eio.Stream.add reply (Obj.magic y_any : Prims.int);
@@ -523,7 +505,7 @@ let run_mode3_eio () =
                      f ();                   (* this will call [Eio.Stream.add reqs ...] *)
                      incr served;
                      (* burst fairness: every 64 tasks yield, else cheap relax *)
-                     if (!served land 0x3F) = 0 then Eio.Fiber.yield () else Domain.cpu_relax ();
+                     (* if (!served land 0x3F) = 0 then Eio.Fiber.yield () else Domain.cpu_relax (); *)
                      loop ()
                  | None ->
                      (* use your stop flag if you have one; keep plain int '>' to avoid pos fights *)
@@ -566,7 +548,8 @@ let run_mode3_eio () =
                           let x = Prims.of_int 1 in
                           Q.enqueue q (fun () -> Eio.Stream.add reqs (Request { x; reply }));
                           let _y = Eio.Stream.take reply in
-                          if (i land 0x3FF) = 0 then Domain.cpu_relax ();
+                          ()
+                          (* if (i land 0x3FF) = 0 then Domain.cpu_relax (); *)
                         done
                     )
                     span)))
