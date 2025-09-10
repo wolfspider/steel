@@ -424,6 +424,10 @@ Printf.printf "min=%s  max=%s  avg=%.1f  imbalance=%.1f%%%%\n%!"
   avg_f imb_f;
 ()
 
+type req =
+  | Request of { x : Prims.int; reply : Prims.int Eio.Stream.t }
+  | Stop
+
 (* ---------------------- MODE 3E: TLQ × PCM (Eio fibers + multi-domains) ---------------------- *)
 let run_mode3_eio () =
   Eio_main.run (fun env ->
@@ -432,7 +436,7 @@ let run_mode3_eio () =
     let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b) in
 
     (* Plain OCaml ints from env; rename to avoid clashes *)
-    let n_producers = try int_of_string (Sys.getenv "PRODUCERS") with _ -> 4 in
+    let n_producers = try int_of_string (Sys.getenv "PRODUCERS") with _ -> 1 in
     let n_consumers = try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4 in
     let iters       = try int_of_string (Sys.getenv "ITERS")     with _ -> 1_000_000 in
     let n_domains   =
@@ -483,35 +487,51 @@ let run_mode3_eio () =
     let served = ref 0 in
 
     Switch.run @@ fun sw ->
-      (* ---- Consumers as fibers, no for-loop ---- *)
-      let cids = List.init n_consumers (fun i -> i) in
-      List.iter
-        (fun cid ->
-           Eio.Fiber.fork ~sw (fun () ->
-             let idle = ref 0 in
-             let rec loop () =
-               match Q.dequeue q with
-               | Some f ->
-                   idle := 0;
-                   incr_nat counts cid;
-                   f ();
-                   if !served land 0x3F = 0  (* every 64 tasks *)
-                   then Eio.Fiber.yield ()
-                   else Domain.cpu_relax ();  (* super cheap on hot path *)
-                   Eio.Fiber.yield ();
-                   loop ()
-               | None ->
-                   if get_stop () then (
-                     incr idle;
-                     if !idle >! 16 then ()
-                     else (Eio.Fiber.yield (); loop ())
-                   ) else (
-                     Eio.Fiber.yield (); loop ()
-                   )
-             in
-             loop ()
-           ))
-        cids;
+      (* --- Single B-server fed by a request stream --- *)
+      (* one request bus on the main Eio scheduler domain *)
+      let reqs : req Eio.Stream.t = Eio.Stream.create 1024 in
+
+        (* 2) One B-server fiber: does full PCM per request *)
+        Eio.Fiber.fork ~sw (fun () ->
+          let rec serve_loop () =
+            match Eio.Stream.take reqs with
+            | Request { x; reply } ->
+                let (cA, cB) = Duplex_PCM.new_channel pingpong in
+                let x_any : Obj.t = (Obj.magic x : Obj.t) in
+                Duplex_PCM.channel_send Duplex_PCM.A pingpong cA x_any;
+                let stepA = Steel_Channel_Protocol.step pingpong x_any in
+                serve_b cB;
+                let y_any = Duplex_PCM.channel_recv Duplex_PCM.A stepA cA in
+                Eio.Stream.add reply (Obj.magic y_any : Prims.int);
+                serve_loop ()
+            | Stop ->
+                ()  (* graceful exit *)
+          in
+          serve_loop ()
+        );
+        
+        (* 3) Consumers: pop TLQ and run closures (those closures add to [reqs]) *)
+        let cids = Stdlib.List.init n_consumers (fun i -> i) in
+        Stdlib.List.iter
+          (fun cid ->
+             Eio.Fiber.fork ~sw (fun () ->
+               let served = ref 0 in
+               let rec loop () =
+                 match Q.dequeue q with
+                 | Some f ->
+                     incr_nat counts cid;   (* your existing counter helper *)
+                     f ();                   (* this will call [Eio.Stream.add reqs ...] *)
+                     incr served;
+                     (* burst fairness: every 64 tasks yield, else cheap relax *)
+                     if (!served land 0x3F) = 0 then Eio.Fiber.yield () else Domain.cpu_relax ();
+                     loop ()
+                 | None ->
+                     (* use your stop flag if you have one; keep plain int '>' to avoid pos fights *)
+                     if get_stop () then () else (Eio.Fiber.yield (); loop ())
+               in
+               loop ()
+             ))
+          cids;
 
       (* ---- Producers spread across domains, no for-loop on spans ---- *)
       let prod_ps =
@@ -533,36 +553,33 @@ let run_mode3_eio () =
               else
                 let elt = Prims.op_Addition start k in
                 build_span (elt :: acc) (Prims.op_Addition k (Prims.of_int 1))
-            in
-                let span : Prims.int list = build_span [] (Prims.of_int 0) in
+              in
+              let span : Prims.int list = build_span [] (Prims.of_int 0) in
 
-                  (* iterate each producer in this domain *)
-                  Stdlib.List.iter
-                      (fun (_p : Prims.int) ->
-                         (* 1-slot reply stream for THIS producer, reused every iteration *)
-                         let reply : Prims.int Eio.Stream.t = Eio.Stream.create 1 in
-                      
-                         (* Plain OCaml for-loop so i is an int for the bitwise throttle *)
-                         for i = 1 to iters do
-                           (* enqueue cross-domain “RPC”: do x+42 and send to reply *)
-                           let x = Prims.of_int 1 in
-                           Q.enqueue q (fun () ->
-                             let y = Prims.op_Addition x (Prims.of_int 42) in
-                             Eio.Stream.add reply y
-                           );
-                          
-                           (* wait for response; still cross-domain traffic *)
-                           let _y : Prims.int = Eio.Stream.take reply in
-                          
-                           (* cheap throttle so producers don’t starve consumers *)
-                           if (i land 0x3FF) = 0 then Eio.Fiber.yield ();
-                         done
-                      )
-                      span)))
+                (* iterate each producer in this domain *)
+                Stdlib.List.iter
+                    (fun (_p : Prims.int) ->
+                       (* 1-slot reply stream for THIS producer, reused every iteration *)
+                       (* per-producer, reused *)
+                      let reply : Prims.int Eio.Stream.t = Eio.Stream.create 1 in
+                        for i = 1 to iters do
+                          let x = Prims.of_int 1 in
+                          Q.enqueue q (fun () -> Eio.Stream.add reqs (Request { x; reply }));
+                          let _y = Eio.Stream.take reply in
+                          if (i land 0x3FF) = 0 then Domain.cpu_relax ();
+                        done
+                    )
+                    span)))
       in
-
       List.iter (fun p -> ignore (Eio.Promise.await_exn p)) prod_ps;
+      (* 1) Send Stop through the same TLQ so it’s ordered after all work *)
+      Q.enqueue q (fun () -> Eio.Stream.add reqs Stop);
+          
+      (* 2) Now tell consumers they may exit once the queue is empty *)
       set_stop true;
+          
+      (* 3) Give the fibers a scheduling turn to process Stop and wind down *)
+      Eio.Fiber.yield ();
       Eio.Time.sleep clock 0.005
     ;
 
@@ -606,7 +623,6 @@ let run_mode3_eio () =
       (Prims.string_of_int max_i)
       avg_f imb_f
   )
-
 
 (* ---------------------- Entry: choose mode ---------------------- *)
 let () =
