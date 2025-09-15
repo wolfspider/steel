@@ -6,8 +6,12 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "FStarLang.fstar-vscode-assistant"
-      ]
+        "FStarLang.fstar-vscode-assistant",
+        "ocamllabs.ocaml-platform"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
     }
   },
   "remoteEnv": {
@@ -21,5 +25,7 @@
   //},
   // These run only when the container is assigned to a user
   "postCreateCommand": {
-  }
+    "build_steel" : "bash -c 'eval \"$(opam env)\" && source $HOME/.profile && make'"
+  },
+  "workspaceFolder": "/workspaces/steel"
 }
