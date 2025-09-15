@@ -524,10 +524,10 @@ type req = Request of { x : Prims.int; reply : Prims.int Eio.Stream.t } | Stop
 let run_mode3_eio () =
   Eio_main.run (fun env ->
       Eio.traceln "Eio backend = %s" (Eio.Stdenv.backend_id env);
-      let tracer =
+      (* let tracer =
         Memtrace.start_tracing ~context:None ~filename:"alloc.ctf"
           ~sampling_rate:1e-8
-      in
+      in *)
 
       let clock = env#clock in
       (* keep your >! helper for Prims comparisons when needed *)
@@ -535,13 +535,13 @@ let run_mode3_eio () =
 
       (* Plain OCaml ints from env; rename to avoid clashes *)
       let n_producers =
-        try int_of_string (Sys.getenv "PRODUCERS") with _ -> 1
+        try int_of_string (Sys.getenv "PRODUCERS") with _ -> 4
       in
       let n_consumers =
-        try int_of_string (Sys.getenv "CONSUMERS") with _ -> 8
+        try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4
       in
       let iters =
-        try int_of_string (Sys.getenv "ITERS") with _ -> 4_000_000
+        try int_of_string (Sys.getenv "ITERS") with _ -> 1_000_000
       in
       let n_domains =
         try int_of_string (Sys.getenv "DOMAINS")
@@ -557,12 +557,19 @@ let run_mode3_eio () =
       ignore (Q.dequeue q);
 
       (* Stop flag guarded by Eio.Mutex *)
-      let stop = ref false in
-      let mu = Eio.Mutex.create () in
-      let get_stop () = Eio.Mutex.use_ro mu (fun () -> !stop) in
-      let set_stop v =
-        Eio.Mutex.use_rw ~protect:true mu (fun () -> stop := v)
-      in
+      (* Atomic stop flag *)
+      let stop = Atomic.make false in
+
+      (* Same function names as before *)
+      let get_stop () = Atomic.get stop in
+      let set_stop v  = Atomic.set stop v in
+
+      (* Optional helpers, if useful *)
+      let request_stop () : unit =
+        ignore (Atomic.exchange stop true) in (* sets to true, discards previous *)
+      
+      let was_stopped_before_request () : bool =
+        Atomic.exchange stop true in          (* sets to true, returns previous *)
 
       (* Bridges already defined elsewhere:
        val nat_of_int : int -> Prims.nat
@@ -597,7 +604,7 @@ let run_mode3_eio () =
       Switch.run @@ fun sw ->
       (* --- Single B-server fed by a request stream --- *)
       (* one request bus on the main Eio scheduler domain *)
-      let reqs : req Eio.Stream.t = Eio.Stream.create 1024 in
+      let reqs : req Eio.Stream.t = Eio.Stream.create (max 1 n_consumers) in
 
       (* 2) One B-server fiber: does full PCM per request *)
       Eio.Fiber.fork ~sw (fun () ->
@@ -616,31 +623,28 @@ let run_mode3_eio () =
           in
           serve_loop ());
 
+      (* one gate to guard dequeue only; queue internals unchanged *)
+      let deq_gate = Eio.Mutex.create () in
+
       (* 3) Consumers: pop TLQ and run closures (those closures add to [reqs]) *)
       let cids = Stdlib.List.init n_consumers (fun i -> i) in
+      (* Consumers: pop TLQ, execute, then ALWAYS yield *)
       Stdlib.List.iter
         (fun cid ->
           Eio.Fiber.fork ~sw (fun () ->
-              let served = ref 0 in
-              let rec loop () =
-                match Q.dequeue q with
-                | Some f ->
-                    incr_nat counts cid;
-                    (* your existing counter helper *)
-                    f ();
-                    (* this will call [Eio.Stream.add reqs ...] *)
-                    incr served;
-                    (* burst fairness: every 64 tasks yield, else cheap relax *)
-                    (* if (!served land 0x3F) = 0 then Eio.Fiber.yield () else Domain.cpu_relax (); *)
-                    loop ()
-                | None ->
-                    (* use your stop flag if you have one; keep plain int '>' to avoid pos fights *)
-                    if get_stop () then ()
-                    else (
-                      Eio.Fiber.yield ();
-                      loop ())
-              in
-              loop ()))
+            let served = ref 0 in
+            let rec loop () =
+              match Q.dequeue q with
+              | Some f ->
+                  f ();                      (* do the work first *)
+                  incr_nat counts cid;       (* then record it *)
+                  incr served;
+                  Eio.Fiber.yield ();        (* <- unconditional fairness *)
+                  loop ()
+              | None ->
+                  if get_stop () then () else (Eio.Fiber.yield (); loop ())
+            in
+            loop ()))
         cids;
 
       (* ---- Producers spread across domains, no for-loop on spans ---- *)
@@ -687,8 +691,8 @@ let run_mode3_eio () =
                           Q.enqueue q (fun () ->
                               Eio.Stream.add reqs (Request { x; reply }));
                           let _y = Eio.Stream.take reply in
-                          ()
-                          (* if (i land 0x3FF) = 0 then Domain.cpu_relax (); *)
+                          
+                          if i land 0x3FF = 0 then Eio.Fiber.yield ();
                         done)
                       span)))
       in
@@ -703,7 +707,7 @@ let run_mode3_eio () =
       (* 3) Give the fibers a scheduling turn to process Stop and wind down *)
       Eio.Fiber.yield ();
       Eio.Time.sleep clock 0.05;
-      Memtrace.stop_tracing tracer;
+      (* Memtrace.stop_tracing tracer; *)
       
 
       let t1 = Unix.gettimeofday () in
