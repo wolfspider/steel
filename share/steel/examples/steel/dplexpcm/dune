@@ -4,7 +4,7 @@
 (executable
   (name Main)              ; uses out/Main.ml as the entry point
   (modules (:standard))    ; picks up out/TwoLockQueue{,Test}.ml, Queue*.ml if present
-  (libraries fstar.lib steel.runtime eio eio_main memtrace)
+  (libraries fstar.lib steel.runtime eio eio_main sqlite3)
   (link_flags "-linkall")
   (modes (native exe))             ; works even without ocamlopt
 )

@@ -2,7 +2,8 @@
 
 open Prims
 open Eio.Std
-open Memtrace
+open Sqlite3
+(* open Memtrace *)
 module TLQ = TwoLockQueue
 
 let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b)
@@ -754,6 +755,307 @@ let run_mode3_eio () =
         (Prims.string_of_int max_i)
         avg_f imb_f)
       
+(* ---------------------- MODE 3Q: TLQ × PCM (Eio fibers + multi-domains) + SQLite3 ---------------------- *)
+let run_mode3_sqlite () =
+  Eio_main.run (fun env ->
+      Eio.traceln "Eio backend = %s" (Eio.Stdenv.backend_id env);
+      (* let tracer =
+        Memtrace.start_tracing ~context:None ~filename:"alloc.ctf"
+          ~sampling_rate:1e-8
+      in *)
+
+      (* ---- SQLite setup (single connection, single writer fiber) ---- *)
+
+      let db_path =
+        try Sys.getenv "SQLITE_PATH" with _ -> "pcm_mode3.sqlite"
+      in
+
+      let db = Sqlite3.db_open db_path in
+      (* avoid SQLITE_BUSY if something briefly contends (shouldn’t, but harmless) *)
+      let () = ignore (Sqlite3.busy_timeout db 5000) in
+
+      (* Reasonable defaults. For max benchmark speed you can relax these later. *)
+      let () =
+        ignore (Sqlite3.exec db "PRAGMA journal_mode=WAL;");
+        ignore (Sqlite3.exec db "PRAGMA synchronous=NORMAL;");
+        ignore (Sqlite3.exec db "PRAGMA temp_store=MEMORY;");
+        ignore (Sqlite3.exec db
+          "CREATE TABLE IF NOT EXISTS pcm_log (\
+             step INTEGER PRIMARY KEY, \
+             x    INTEGER NOT NULL, \
+             y    INTEGER NOT NULL\
+           );");
+        ignore (Sqlite3.exec db "DELETE FROM pcm_log;")
+      in
+
+      (* BIG performance point: wrap inserts in a transaction *)
+      let () = ignore (Sqlite3.exec db "BEGIN;") in
+
+      let insert_stmt =
+        Sqlite3.prepare db "INSERT INTO pcm_log(step, x, y) VALUES (?, ?, ?)"
+      in
+
+      (* In F* extraction, Prims.int is typically Zarith Z.t *)
+      let int64_of_prims (z : Prims.int) : int64 =
+        Z.to_int64 z
+      in
+
+      let stepper = ref 0 in
+      let next_step () = incr stepper; !stepper in
+      let db_insert ~(step:int) ~(x:Prims.int) ~(y:Prims.int) : unit =
+        ignore (Sqlite3.reset insert_stmt);
+        ignore (Sqlite3.clear_bindings insert_stmt);
+      
+        ignore (Sqlite3.bind insert_stmt 1 (Sqlite3.Data.INT (int64_of_prims step)));
+        ignore (Sqlite3.bind insert_stmt 2 (Sqlite3.Data.INT (int64_of_prims x)));
+        ignore (Sqlite3.bind insert_stmt 3 (Sqlite3.Data.INT (int64_of_prims y)));
+      
+        match Sqlite3.step insert_stmt with
+        | Sqlite3.Rc.DONE -> ()
+        | rc -> failwith ("sqlite insert failed: " ^ Sqlite3.Rc.to_string rc)
+      in
+
+      let clock = env#clock in
+      (* keep your >! helper for Prims comparisons when needed *)
+      let ( >! ) a b = Prims.op_GreaterThan (Prims.of_int a) (Prims.of_int b) in
+
+      (* Plain OCaml ints from env; rename to avoid clashes *)
+      let n_producers =
+        try int_of_string (Sys.getenv "PRODUCERS") with _ -> 4
+      in
+      let n_consumers =
+        try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4
+      in
+      let iters =
+        try int_of_string (Sys.getenv "ITERS") with _ -> 1_000_000
+      in
+      let n_domains =
+        try int_of_string (Sys.getenv "DOMAINS")
+        with _ -> max 1 (Domain.recommended_domain_count ())
+      in
+
+      Printf.printf
+        "[3E] domains=%d producers=%d consumers=%d iters/producer=%d\n%!"
+        n_domains n_producers n_consumers iters;
+
+      (* Keep Steel TLQ; drop dummy *)
+      let q = Q.new_queue (fun () -> ()) in
+      ignore (Q.dequeue q);
+
+      (* Stop flag guarded by Eio.Mutex *)
+      (* Atomic stop flag *)
+      let stop = Atomic.make false in
+
+      (* Same function names as before *)
+      let get_stop () = Atomic.get stop in
+      let set_stop v  = Atomic.set stop v in
+
+      (* Optional helpers, if useful *)
+      let request_stop () : unit =
+        ignore (Atomic.exchange stop true) in (* sets to true, discards previous *)
+      
+      let was_stopped_before_request () : bool =
+        Atomic.exchange stop true in          (* sets to true, returns previous *)
+
+      (* Bridges already defined elsewhere:
+       val nat_of_int : int -> Prims.nat
+       val int_of_nat : Prims.nat -> int
+       val f_of_int   : Prims.int -> float
+    *)
+      let counts : Prims.nat array = Array.make n_consumers (Prims.of_int 0) in
+      let incr_nat (a : Prims.nat array) i =
+        let v = int_of_nat a.(i) + Prims.of_int 1 in
+        a.(i) <- nat_of_int v
+      in
+
+      (* PCM service unchanged *)
+      let serve_b (cB : Duplex_PCM.ch) : unit =
+        let x =
+          Duplex_PCM.channel_recv Duplex_PCM.B
+            (Steel_Channel_Protocol.dual duat)
+            cB
+        in
+        let xi : Prims.int = (Obj.magic x : Prims.int) in
+      
+        (* one global step per received message, in the B-server fiber *)
+        let s = next_step () in
+      
+        (* y becomes 43,44,45,... (since s starts at 1) *)
+        let yi : Prims.int = (Prims.of_int s) + (Prims.of_int 42) in
+      
+        let stepB =
+          Steel_Channel_Protocol.step (Steel_Channel_Protocol.dual duat) x
+        in
+      
+        Duplex_PCM.channel_send Duplex_PCM.B stepB cB (Obj.magic yi);
+      
+        (* insert uses the SAME step value *)
+        db_insert ~step:(Prims.of_int s) ~x:xi ~y:yi
+      in
+
+
+      let t0 = Unix.gettimeofday () in
+
+      let served = ref 0 in
+
+      Switch.run @@ fun sw ->
+      (* --- Single B-server fed by a request stream --- *)
+      (* one request bus on the main Eio scheduler domain *)
+      let reqs : req Eio.Stream.t = Eio.Stream.create (max 1 n_consumers) in
+
+      (* 2) One B-server fiber: does full PCM per request *)
+      Eio.Fiber.fork ~sw (fun () ->
+          let rec serve_loop () =
+            match Eio.Stream.take reqs with
+            | Request { x; reply } ->
+                let cA, cB = Duplex_PCM.new_channel duat in
+                let x_any : Obj.t = (Obj.magic x : Obj.t) in
+                Duplex_PCM.channel_send Duplex_PCM.A duat cA x_any;
+                let stepA = Steel_Channel_Protocol.step duat x_any in
+                serve_b cB;
+                let y_any = Duplex_PCM.channel_recv Duplex_PCM.A stepA cA in
+                Eio.Stream.add reply (Obj.magic y_any : Prims.int);
+                serve_loop ()
+            | Stop -> () (* graceful exit *)
+          in
+          serve_loop ());
+
+      (* one gate to guard dequeue only; queue internals unchanged *)
+      let deq_gate = Eio.Mutex.create () in
+
+      (* 3) Consumers: pop TLQ and run closures (those closures add to [reqs]) *)
+      let cids = Stdlib.List.init n_consumers (fun i -> i) in
+      (* Consumers: pop TLQ, execute, then ALWAYS yield *)
+      Stdlib.List.iter
+        (fun cid ->
+          Eio.Fiber.fork ~sw (fun () ->
+            let served = ref 0 in
+            let rec loop () =
+              match Q.dequeue q with
+              | Some f ->
+                  f ();                      (* do the work first *)
+                  incr_nat counts cid;       (* then record it *)
+                  incr served;
+                  Eio.Fiber.yield ();        (* <- unconditional fairness *)
+                  loop ()
+              | None ->
+                  if get_stop () then () else (Eio.Fiber.yield (); loop ())
+            in
+            loop ()))
+        cids;
+
+      (* ---- Producers spread across domains, no for-loop on spans ---- *)
+      let prod_ps =
+        List.init n_domains (fun dom_i ->
+            Eio.Fiber.fork_promise ~sw (fun () ->
+                Eio.Domain_manager.run env#domain_mgr (fun () ->
+                    (* shard indices using half-open [start, stop) — all in Prims.int *)
+                    let start : Prims.int =
+                      Prims.of_int dom_i * Prims.of_int n_producers
+                      / Prims.of_int n_domains
+                    in
+                    let stop_excl : Prims.int =
+                      (Prims.of_int dom_i + Prims.of_int 1)
+                      * Prims.of_int n_producers / Prims.of_int n_domains
+                    in
+                    let count_p : Prims.int =
+                      Prims.op_Subtraction stop_excl start
+                    in
+
+                    (* build span = [start + 0 ; … ; start + (count-1)] with Prims math only *)
+                    let rec build_span acc (k : Prims.int) =
+                      if Prims.op_GreaterThanOrEqual k count_p then
+                        Stdlib.List.rev acc
+                      else
+                        let elt = Prims.op_Addition start k in
+                        build_span (elt :: acc)
+                          (Prims.op_Addition k (Prims.of_int 1))
+                    in
+                    let span : Prims.int list =
+                      build_span [] (Prims.of_int 0)
+                    in
+
+                    (* iterate each producer in this domain *)
+                    Stdlib.List.iter
+                      (fun (_p : Prims.int) ->
+                        (* 1-slot reply stream for THIS producer, reused every iteration *)
+                        (* per-producer, reused *)
+                        let reply : Prims.int Eio.Stream.t =
+                          Eio.Stream.create 1
+                        in
+                        for i = 1 to iters do
+                          let x = Prims.of_int 1 in
+                          Q.enqueue q (fun () ->
+                              Eio.Stream.add reqs (Request { x; reply }));
+                          let _y = Eio.Stream.take reply in
+                          
+                          if i land 0x3FF = 0 then Eio.Fiber.yield ();
+                        done)
+                      span)))
+      in
+
+      List.iter (fun p -> ignore (Eio.Promise.await_exn p)) prod_ps;
+      (* 1) Send Stop through the same TLQ so it’s ordered after all work *)
+      Q.enqueue q (fun () -> Eio.Stream.add reqs Stop);
+
+      (* 2) Now tell consumers they may exit once the queue is empty *)
+      set_stop true;
+
+      (* 3) Give the fibers a scheduling turn to process Stop and wind down *)
+      Eio.Fiber.yield ();
+      Eio.Time.sleep clock 0.05;
+      (* after Stop has been processed and before printing final stats *)
+      ignore (Sqlite3.exec db "COMMIT;");
+      ignore (Sqlite3.finalize insert_stmt);
+      ignore (Sqlite3.db_close db);
+      (* Memtrace.stop_tracing tracer; *)
+      
+
+      let t1 = Unix.gettimeofday () in
+
+      (* ---- stats identical to 3S ---- *)
+      let total_i : Prims.int =
+        Array.fold_left
+          (fun acc k_nat -> Prims.op_Addition acc (Obj.magic k_nat : Prims.int))
+          (Prims.of_int 0) counts
+      in
+      let min_i, max_i =
+        let first : Prims.int = (Obj.magic counts.(0) : Prims.int) in
+        Array.fold_left
+          (fun (mn, mx) k_nat ->
+            let ki : Prims.int = (Obj.magic k_nat : Prims.int) in
+            let mn' = if Prims.op_LessThan ki mn then ki else mn in
+            let mx' = if Prims.op_GreaterThan ki mx then ki else mx in
+            (mn', mx'))
+          (first, first) counts
+      in
+      let secs = t1 -. t0 in
+      let avg_f = f_of_int total_i /. float_of_int n_consumers in
+      let imb_f =
+        if Prims.op_Equality max_i (Prims.of_int 0) then 0.0
+        else
+          f_of_int (Prims.op_Subtraction max_i min_i) /. f_of_int max_i *. 100.0
+      in
+      let rate_f = f_of_int total_i /. secs in
+      
+
+      Printf.printf "=== PCM × TwoLockQueue (Eio) ===\n";
+      Printf.printf "producers=%d  consumers=%d  iters/producer=%d\n"
+        n_producers n_consumers iters;
+      Array.iteri
+        (fun i k_nat ->
+          Printf.printf "T%-2d: %s\n" i
+            (Prims.string_of_int (Obj.magic k_nat : Prims.int)))
+        counts;
+      Printf.printf "total=%s  time=%.3fs  throughput=%.0f ops/s\n%!"
+        (Prims.string_of_int total_i)
+        secs rate_f;
+      Printf.printf "min=%s  max=%s  avg=%.1f  imbalance=%.1f%%%%\n%!"
+        (Prims.string_of_int min_i)
+        (Prims.string_of_int max_i)
+        avg_f imb_f)
+  
+
 
 (* ---------------------- Entry: choose mode ---------------------- *)
 let () =
@@ -765,4 +1067,5 @@ let () =
   | "2" -> run_mode2 ()
   | "3S" -> run_mode3_stress ()
   | "3E" -> run_mode3_eio ()
+  | "3Q" -> run_mode3_sqlite ()
   | "3" | _ -> run_mode3 ()

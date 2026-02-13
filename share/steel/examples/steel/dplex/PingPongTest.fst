@@ -14,9 +14,10 @@ module Protocol = Steel.Channel.Protocol
 /// It then receives an integer that is ensured to be strictly greater than the one she sent
 /// The protocol then terminates by returning unit (done)
 let pingpong : Duplex.prot =
-  x <-- Protocol.send int;
-  y <-- Protocol.recv (y:int{y > x});
-  Protocol.done
+  Protocol.bind (Protocol.send int) (fun x ->
+  Protocol.bind (Protocol.recv (y:int{y > x})) (fun y ->
+  Protocol.done))
+
 
 /// An implementation of the pingpong protocol specified above.
 /// The client takes as an argument a channel that satisfies the pingpong protocol
