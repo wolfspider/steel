@@ -1,42 +1,69 @@
 module Domain
 module L = FStar.List.Tot.Base
+module M = Model
 
-type model (t:Type) = t
-type action =
-  | Step
-  | Sync
-  | Flush
+open Steel.Memory
+open Steel.Effect.Atomic
+open Steel.Effect
+
+open Selectors.Tree
+open Selectors.Tree.Core
+module Spec = Trees
+
+type model = M.model
+type action = M.action
+
 type err = unit
 type result (t:Type0) (e:Type0) =
   | Ok  : value:t -> result t e
   | Err : error:e -> result t e
+
 let reject_err (_:unit) : err = ()
-assume val inv (#t:Type) : model t -> prop
-let init (#t:Type) (zero:t) : model t = zero
-let try_step (#t:Type) (next: t -> t) (m:model t) (a:action) : result (model t) err =
+
+assume val inv : model -> prop
+
+let init (_:unit) : model = M.init ()
+
+let try_step (m:model) (a:action) : result model err =
   match a with
-  | Step  -> Ok (next m)
-  | Sync  -> Ok m
-  | Flush -> Ok m
-assume val init_satisfies_inv : (#t:Type) -> (zero:t) -> Lemma (inv (init zero))
+  | M.Sync  -> Ok m
+  | M.Flush -> Ok m
+  | _       -> Ok (M.next m a)
+
+assume val init_satisfies_inv : unit -> Lemma (inv (init ()))
 assume val step_preserves_inv :
-  (#t:Type) ->
-  m:model t -> a:action -> m2:model t ->
-  Lemma (requires inv m /\ (exists (next: t -> t). try_step next m a == Ok m2))
+  m:model -> a:action -> m2:model ->
+  Lemma (requires inv m /\ try_step m a == Ok m2)
         (ensures  inv m2)
+
 let rebase (_remote:action) (local:action) : action = local
+
 let rebase_through_suffix (suffix:list action) (a:action) : action =
   L.fold_left (fun acc remote -> rebase remote acc) a (L.rev suffix)
-let candidates (#t:Type) (_m:model t) (orig:action) : list action = [orig]
+
+let candidates (_m:model) (orig:action) : list action = [orig]
+
 assume val explains : action -> action -> prop
 assume val candidates_complete :
-  (#t:Type) ->
-  m:model t -> orig:action -> a_good:action -> m2:model t ->
-  Lemma (requires inv m /\ explains orig a_good /\ (exists (next: t -> t). try_step next m a_good == Ok m2))
+  m:model -> orig:action -> a_good:action -> m2:model ->
+  Lemma (requires inv m /\ explains orig a_good /\ try_step m a_good == Ok m2)
         (ensures  L.mem a_good (candidates m orig))
-let model_eqb (#t:Type) (eqb: t -> t -> bool) (x:model t) (y:model t) : bool =
-  eqb x y
-assume val model_eqb_spec :
-  (#t:Type) ->
-  x:model t -> y:model t ->
-  Lemma (ensures (forall (eqb: t -> t -> bool). model_eqb eqb x y <==> (x == y)))
+
+#push-options "--warn_error -330"
+
+let model_ref = t (Spec.node_data M.field_key M.field_value)
+
+val model_eqb
+  (ptr1 ptr2: model_ref)
+  : Steel bool
+    (linked_tree ptr1 `star` linked_tree ptr2)
+    (fun _ -> linked_tree ptr1 `star` linked_tree ptr2)
+    (requires fun _ -> True)
+    (ensures fun h0 b h1 ->
+      v_linked_tree ptr1 h0 == v_linked_tree ptr1 h1 /\
+      v_linked_tree ptr2 h0 == v_linked_tree ptr2 h1 /\
+      b == M.model_eqb
+             (v_linked_tree ptr1 h0)
+             (v_linked_tree ptr2 h0))
+
+#pop-options
