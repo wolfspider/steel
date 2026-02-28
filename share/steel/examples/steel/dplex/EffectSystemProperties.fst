@@ -8,7 +8,7 @@ open FStar.List.Tot
 open FStar.List.Tot.Base
 
 // ---------------------------------------------------------------------------
-// Pending helpers (list-based; matches your ES.client.pending : list action)
+// Pending helpers
 // ---------------------------------------------------------------------------
 
 let pending (es:E.effect_state) : list D.action =
@@ -18,13 +18,13 @@ let pending_tail (es:E.effect_state) : list D.action =
   match pending es with
   | [] -> []
   | _::tl -> tl
+  | _ -> []
 
 // ---------------------------------------------------------------------------
 // Helper: Apply a sequence (list) of events
 // ---------------------------------------------------------------------------
 
 let rec apply_events
-  (next: nat -> nat)
   (es:E.effect_state{E.inv es})
   (events:list E.event)
   : Tot (es':E.effect_state{E.inv es'})
@@ -33,13 +33,12 @@ let rec apply_events
   match events with
   | [] -> es
   | ev::tl ->
-      let (es1, _cmd) = E.step next es ev in
+      let (es1, _cmd) = E.step es ev in
       let _ = E.step_preserves_inv es ev in
-      apply_events next es1 tl
-
+      apply_events es1 tl
 
 // ---------------------------------------------------------------------------
-// Action fate: "processed" = was head AND accept/reject while Dispatching
+// Action fate
 // ---------------------------------------------------------------------------
 
 let processed_now (es:E.effect_state) (ev:E.event) (a:D.action) : prop =
@@ -48,7 +47,7 @@ let processed_now (es:E.effect_state) (ev:E.event) (a:D.action) : prop =
   | E.Dispatching _, E.DispatchRejected _ _, hd::_ -> hd == a
   | _ -> False
 
-let rec action_was_processed (next: nat -> nat) (es:E.effect_state) (events:list E.event) (a:D.action)
+let rec action_was_processed (es:E.effect_state) (events:list E.event) (a:D.action)
   : Tot prop
     (decreases events)
 =
@@ -56,19 +55,19 @@ let rec action_was_processed (next: nat -> nat) (es:E.effect_state) (events:list
   | [] -> False
   | ev::tl ->
     processed_now es ev a \/
-    (let (es1, _cmd) = E.step next es ev in
-     action_was_processed next es1 tl a)
+    (let (es1, _cmd) = E.step es ev in
+     action_was_processed es1 tl a)
 
 // ---------------------------------------------------------------------------
 // SYSTEM PROPERTY 1: No Silent Data Loss
 // ---------------------------------------------------------------------------
 
-let no_silent_data_loss (next: nat -> nat) (es:E.effect_state) (a:D.action) (events:list E.event)
+let no_silent_data_loss (es:E.effect_state) (a:D.action) (events:list E.event)
   : Lemma
       (requires E.inv es /\ mem a (pending es))
       (ensures
-        (let es' = apply_events next es events in
-        mem a (pending es') \/ action_was_processed next es events a))
+        (let es' = apply_events es events in
+        mem a (pending es') \/ action_was_processed es events a))
       (decreases events)
 =
   admit ()
@@ -77,11 +76,11 @@ let no_silent_data_loss (next: nat -> nat) (es:E.effect_state) (a:D.action) (eve
 // SYSTEM PROPERTY 2: UserAction is captured (enters pending)
 // ---------------------------------------------------------------------------
 
-let user_action_enters_pending (next: nat -> nat) (es:E.effect_state) (a:D.action)
+let user_action_enters_pending (es:E.effect_state) (a:D.action)
   : Lemma
       (requires E.inv es)
       (ensures
-        (let (es', _cmd) = E.step next es (E.UserAction a) in
+        (let (es', _cmd) = E.step es (E.UserAction a) in
         mem a (pending es')))
 =
   admit ()
@@ -90,24 +89,24 @@ let user_action_enters_pending (next: nat -> nat) (es:E.effect_state) (a:D.actio
 // SYSTEM PROPERTY 3: FIFO Processing
 // ---------------------------------------------------------------------------
 
-let fifo_processing (next: nat -> nat) (es:E.effect_state) (ev:E.event) (a:D.action)
+let fifo_processing (es:E.effect_state) (ev:E.event) (a:D.action)
   : Lemma
       (requires E.inv es /\ mem a (pending_tail es))
       (ensures
-        (let (es', _cmd) = E.step next es ev in
+        (let (es', _cmd) = E.step es ev in
         mem a (pending es')))
 =
   admit ()
 
 // ---------------------------------------------------------------------------
-// SYSTEM PROPERTY 4: Progress trigger (Tick when Online+Idle+Pending)
+// SYSTEM PROPERTY 4: Progress trigger
 // ---------------------------------------------------------------------------
 
-let online_idle_pending_makes_progress (next: nat -> nat) (es:E.effect_state)
+let online_idle_pending_makes_progress (es:E.effect_state)
   : Lemma
       (requires E.inv es /\ E.is_online es == true /\ E.is_idle es == true /\ E.has_pending es == true)
       (ensures
-        (let (_es', cmd) = E.step next es E.Tick in
+        (let (_es', cmd) = E.step es E.Tick in
         match cmd with
         | E.SendDispatch _ _ -> True
         | _ -> False))

@@ -3,11 +3,12 @@ module LeaderCluster
 module MC = MultiCollaboration
 module D  = Domain
 module RT = RealtimeCollaboration
+module M  = Model
 
 open FStar.List.Tot
 open FStar.Classical
 
-type model = D.model nat
+type model = M.model
 
 // ============================================================================
 // Cluster view
@@ -29,32 +30,34 @@ let follower_is_prefix (l:leader) (f:follower) : prop =
 // Leader commit
 // ============================================================================
 
-type commit = {
+noeq type commit = {
   idx : nat;
   act : D.action;
 }
 
-type leader_commit_result = {
+noeq type leader_commit_result = {
   leader'   : leader;
   reply     : MC.reply;
   committed : RT.option commit;
 }
 
 let leader_commit
-  (next: nat -> nat)
   (l:leader)
   (baseVersion:nat{baseVersion <= leader_version l})
   (orig:D.action)
   : Tot leader_commit_result
 =
-  let (l', rep) = MC.dispatch next l baseVersion orig in
+  let (l', rep) = MC.dispatch l baseVersion orig in
   match rep with
   | MC.Accepted newV _newPresent applied _noChange ->
       { leader' = l';
         reply = rep;
         committed = RT.Some { idx = newV; act = applied } }
-
   | MC.Rejected _reason _rebased ->
+      { leader' = l';
+        reply = rep;
+        committed = RT.None }
+  | _ ->
       { leader' = l';
         reply = rep;
         committed = RT.None }
@@ -63,7 +66,7 @@ let leader_commit
 // Delivery / follower apply
 // ============================================================================
 
-type delivered = {
+noeq type delivered = {
   idx   : nat;
   model : model;
   act   : D.action;
@@ -78,7 +81,7 @@ let follower_apply
     appliedLog = f.appliedLog @ [d.act];
     auditLog   = f.auditLog }
 
-type delivered_ok = {
+noeq type delivered_ok = {
   rest : list D.action
 }
 
@@ -91,7 +94,6 @@ assume val delivered_is_next :
     (ensures  fun ok ->
       l.appliedLog == f.appliedLog @ (d.act :: ok.rest) /\
       d.model == l.present)
-
 
 // ============================================================================
 // Prefix lemma
@@ -138,15 +140,13 @@ let leader_snapshot (l:leader) : RT.realtime_event =
   { version = leader_version l; model = l.present }
 
 let client_on_snapshot
-  (next: nat -> nat)
   (c:RT.client_state)
   (e:RT.realtime_event)
   : Tot RT.client_state
 =
-  RT.handle_realtime_update next c e.version e.model
+  RT.handle_realtime_update c e.version e.model
 
 let rec push_snapshots
-  (next: nat -> nat)
   (c:RT.client_state)
   (es:list RT.realtime_event)
   : Tot RT.client_state
@@ -154,17 +154,16 @@ let rec push_snapshots
 =
   match es with
   | [] -> c
-  | e::tl -> push_snapshots next (client_on_snapshot next c e) tl
+  | e::tl -> push_snapshots (client_on_snapshot c e) tl
 
 let rec snapshots_skipped_during_flush
-  (next: nat -> nat)
   (c:RT.client_state{c.mode == RT.Flushing})
   (es:list RT.realtime_event)
-  : Lemma (ensures push_snapshots next c es == c)
+  : Lemma (ensures push_snapshots c es == c)
   (decreases es)
 =
   match es with
   | [] -> ()
   | e::tl ->
-      assert (client_on_snapshot next c e == c);
-      snapshots_skipped_during_flush next c tl
+      assert (client_on_snapshot c e == c);
+      snapshots_skipped_during_flush c tl

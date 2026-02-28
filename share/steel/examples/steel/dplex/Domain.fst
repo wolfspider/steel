@@ -49,11 +49,9 @@ assume val candidates_complete :
   Lemma (requires inv m /\ explains orig a_good /\ try_step m a_good == Ok m2)
         (ensures  L.mem a_good (candidates m orig))
 
-#push-options "--warn_error -330"
-
 let model_ref = t (Spec.node_data M.field_key M.field_value)
 
-val model_eqb
+assume val model_eqb
   (ptr1 ptr2: model_ref)
   : Steel bool
     (linked_tree ptr1 `star` linked_tree ptr2)
@@ -65,5 +63,3 @@ val model_eqb
       b == M.model_eqb
              (v_linked_tree ptr1 h0)
              (v_linked_tree ptr2 h0))
-
-#pop-options

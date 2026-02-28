@@ -1,15 +1,6 @@
 open Prims
-type 't model = 't
-type action =
-  | Step 
-  | Sync 
-  | Flush 
-let uu___is_Step (projectee : action) : Prims.bool=
-  match projectee with | Step -> true | uu___ -> false
-let uu___is_Sync (projectee : action) : Prims.bool=
-  match projectee with | Sync -> true | uu___ -> false
-let uu___is_Flush (projectee : action) : Prims.bool=
-  match projectee with | Flush -> true | uu___ -> false
+type model = Model.model
+type action = Model.action
 type err = unit
 type ('t, 'e) result =
   | Ok of 't 
@@ -23,17 +14,21 @@ let uu___is_Err (projectee : ('t, 'e) result) : Prims.bool=
 let __proj__Err__item__error (projectee : ('t, 'e) result) : 'e=
   match projectee with | Err error -> error
 
-type ('t, 'uuuuu) inv = unit
-let init (zero : 't) : 't model= zero
-let try_step (next : 't -> 't) (m : 't model) (a : action) :
-  ('t model, unit) result=
-  match a with | Step -> Ok (next m) | Sync -> Ok m | Flush -> Ok m
+type 'uuuuu inv = unit
+let init (uu___ : unit) : model= Model.init ()
+let try_step (m : model) (a : action) : (model, unit) result=
+  match a with
+  | Model.Sync -> Ok m
+  | Model.Flush -> Ok m
+  | uu___ -> Ok (Model.next m a)
 let rebase (_remote : action) (local : action) : action= local
 let rebase_through_suffix (suffix : action Prims.list) (a : action) : 
   action=
   FStar_List_Tot_Base.fold_left (fun acc remote -> rebase remote acc) a
     (FStar_List_Tot_Base.rev suffix)
-let candidates (_m : 't model) (orig : action) : action Prims.list= [orig]
+let candidates (_m : model) (orig : action) : action Prims.list= [orig]
 type ('uuuuu, 'uuuuu1) explains = unit
-let model_eqb (eqb : 't -> 't -> Prims.bool) (x : 't model) (y : 't model) :
-  Prims.bool= eqb x y
+type model_ref =
+  (Model.field_key, Model.field_value) Trees.node_data Selectors_Tree_Core.t
+let model_eqb (ptr1 : model_ref) (ptr2 : model_ref) : Prims.bool=
+  failwith "Not yet implemented: Domain.model_eqb"

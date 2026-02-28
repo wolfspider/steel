@@ -35,6 +35,10 @@ ml: out/.ml.stamp
 out/.ml.stamp: PingPongTest.fst check | out
 	$(FSTAR) $(FSTAR_OPTIONS) --cache_dir $(CACHE_DIR) --cache_checked_modules \
 	  --codegen OCaml --odir out PingPongTest.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Trees.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Selectors.Tree.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Selectors.Tree.Core.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Model.fst
 	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Domain.fst
 	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out MultiCollaboration.fst
 	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out EffectStateMachine.fst

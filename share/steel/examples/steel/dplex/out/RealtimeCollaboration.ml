@@ -1,5 +1,5 @@
 open Prims
-type model = Prims.nat Domain.model
+type model = Model.model
 type 'a option =
   | None 
   | Some of 'a 
@@ -38,20 +38,20 @@ let init_client (v : Prims.nat) (m : model) : client_state=
   { base = (MultiCollaboration.init_client v m); mode = Normal }
 let sync (server : MultiCollaboration.server_state) : client_state=
   { base = (MultiCollaboration.sync server); mode = Normal }
-let local_dispatch (next : Prims.nat -> Prims.nat) (c : client_state)
-  (a : Domain.action) : client_state=
-  let b' = MultiCollaboration.client_local_dispatch next c.base a in
+let local_dispatch (c : client_state) (a : Domain.action) : client_state=
+  let b' = MultiCollaboration.client_local_dispatch c.base a in
   { base = b'; mode = (c.mode) }
-let handle_realtime_update (next : Prims.nat -> Prims.nat) (c : client_state)
-  (serverVersion : Prims.nat) (serverModel : model) : client_state=
+let handle_realtime_update (c : client_state) (serverVersion : Prims.nat)
+  (serverModel : model) : client_state=
   match c.mode with
   | Flushing -> c
   | Offline -> c
   | Normal ->
       let b' =
-        MultiCollaboration.handle_realtime_update next c.base serverVersion
+        MultiCollaboration.handle_realtime_update c.base serverVersion
           serverModel in
       { base = b'; mode = Normal }
+  | uu___ -> c
 let enter_flush_mode (c : client_state) : client_state=
   { base = (c.base); mode = Flushing }
 let exit_flush_mode (c : client_state)
@@ -69,14 +69,13 @@ let __proj__Mkflush_one_result__item__client (projectee : flush_one_result) :
 let __proj__Mkflush_one_result__item__reply (projectee : flush_one_result) :
   MultiCollaboration.reply=
   match projectee with | { server; client; reply;_} -> reply
-let flush_one (next : Prims.nat -> Prims.nat)
-  (server : MultiCollaboration.server_state) (client : client_state) :
-  flush_one_result option=
+let flush_one (server : MultiCollaboration.server_state)
+  (client : client_state) : flush_one_result option=
   match pending client with
   | [] -> None
   | action::rest ->
       let uu___ =
-        MultiCollaboration.dispatch next server (base_version client) action in
+        MultiCollaboration.dispatch server (base_version client) action in
       (match uu___ with
        | (newServer, rep) ->
            (match rep with
@@ -100,7 +99,8 @@ let flush_one (next : Prims.nat -> Prims.nat)
                     MultiCollaboration.pending = rest
                   } in
                 let newClient = { base = newBase; mode = (client.mode) } in
-                Some { server = newServer; client = newClient; reply = rep }))
+                Some { server = newServer; client = newClient; reply = rep }
+            | uu___1 -> None))
 type flush_all_result =
   {
   server1: MultiCollaboration.server_state ;
@@ -118,19 +118,18 @@ let __proj__Mkflush_all_result__item__replies (projectee : flush_all_result)
   : MultiCollaboration.reply Prims.list=
   match projectee with
   | { server1 = server; client1 = client; replies;_} -> replies
-let rec flush_all (next : Prims.nat -> Prims.nat)
-  (server : MultiCollaboration.server_state) (client : client_state) :
-  flush_all_result=
+let rec flush_all (server : MultiCollaboration.server_state)
+  (client : client_state) : flush_all_result=
   match pending client with
   | [] -> { server1 = server; client1 = client; replies = [] }
   | uu___::uu___1 ->
-      (match flush_one next server client with
+      (match flush_one server client with
        | None -> { server1 = server; client1 = client; replies = [] }
        | Some r ->
            if
              (base_version r.client) <= (MultiCollaboration.version r.server)
            then
-             let rest = flush_all next r.server r.client in
+             let rest = flush_all r.server r.client in
              {
                server1 = (rest.server1);
                client1 = (rest.client1);
@@ -141,7 +140,8 @@ let rec flush_all (next : Prims.nat -> Prims.nat)
                server1 = (r.server);
                client1 = (r.client);
                replies = [r.reply]
-             })
+             }
+       | uu___2 -> { server1 = server; client1 = client; replies = [] })
 type flush_cycle_result =
   {
   server2: MultiCollaboration.server_state ;
@@ -159,11 +159,10 @@ let __proj__Mkflush_cycle_result__item__replies
   (projectee : flush_cycle_result) : MultiCollaboration.reply Prims.list=
   match projectee with
   | { server2 = server; client2 = client; replies1 = replies;_} -> replies
-let flush_cycle (next : Prims.nat -> Prims.nat)
-  (server : MultiCollaboration.server_state) (client : client_state) :
-  flush_cycle_result=
+let flush_cycle (server : MultiCollaboration.server_state)
+  (client : client_state) : flush_cycle_result=
   let flushingClient = enter_flush_mode client in
-  let all = flush_all next server flushingClient in
+  let all = flush_all server flushingClient in
   let finalClient = exit_flush_mode all.client1 all.server1 in
   { server2 = (all.server1); client2 = finalClient; replies1 = (all.replies)
   }
@@ -174,20 +173,19 @@ let __proj__Mkrealtime_event__item__version (projectee : realtime_event) :
   Prims.nat= match projectee with | { version; model = model1;_} -> version
 let __proj__Mkrealtime_event__item__model (projectee : realtime_event) :
   model= match projectee with | { version; model = model1;_} -> model1
-let rec process_realtime_events (next : Prims.nat -> Prims.nat)
-  (client : client_state) (events : realtime_event Prims.list) :
-  client_state=
+let rec process_realtime_events (client : client_state)
+  (events : realtime_event Prims.list) : client_state=
   match events with
   | [] -> client
   | e::tl ->
-      let client' = handle_realtime_update next client e.version e.model in
-      process_realtime_events next client' tl
-let flush_with_realtime_events (next : Prims.nat -> Prims.nat)
-  (server : MultiCollaboration.server_state) (client : client_state)
-  (events : realtime_event Prims.list) : flush_cycle_result=
+      let client' = handle_realtime_update client e.version e.model in
+      process_realtime_events client' tl
+let flush_with_realtime_events (server : MultiCollaboration.server_state)
+  (client : client_state) (events : realtime_event Prims.list) :
+  flush_cycle_result=
   let flushingClient = enter_flush_mode client in
-  let afterEvents = process_realtime_events next flushingClient events in
-  let all = flush_all next server flushingClient in
+  let afterEvents = process_realtime_events flushingClient events in
+  let all = flush_all server flushingClient in
   let finalClient = exit_flush_mode all.client1 all.server1 in
   { server2 = (all.server1); client2 = finalClient; replies1 = (all.replies)
   }

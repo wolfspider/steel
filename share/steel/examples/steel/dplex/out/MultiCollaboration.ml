@@ -1,5 +1,5 @@
 open Prims
-type model = Prims.nat Domain.model
+type model = Model.model
 type reject_reason =
   | DomainInvalid 
 let uu___is_DomainInvalid (projectee : reject_reason) : Prims.bool= true
@@ -94,7 +94,7 @@ let __proj__Mkserver_state__item__auditLog (projectee : server_state) :
 let version (s : server_state) : Prims.nat=
   FStar_List_Tot_Base.length s.appliedLog
 let init_server (uu___ : unit) : server_state=
-  { present = (Domain.init Prims.int_zero); appliedLog = []; auditLog = [] }
+  { present = (Domain.init ()); appliedLog = []; auditLog = [] }
 let pred_nat (n : Prims.nat) : Prims.nat=
   if n = Prims.int_zero
   then Prims.int_zero
@@ -106,23 +106,22 @@ let rec drop_nat : 'a . Prims.nat -> 'a Prims.list -> 'a Prims.list =
     else (match xs with | [] -> [] | uu___1::tl -> drop_nat (pred_nat n) tl)
 let suffix_from (baseVersion : Prims.nat) (xs : 'a Prims.list) :
   'a Prims.list= drop_nat baseVersion xs
-let rec choose_candidate (next : Prims.nat -> Prims.nat) (m : model)
-  (cs : Domain.action Prims.list) :
+let rec choose_candidate (m : model) (cs : Domain.action Prims.list) :
   ((model * Domain.action), unit) Domain.result=
   match cs with
   | [] -> Domain.Err ()
   | hd::tl ->
-      (match Domain.try_step next m hd with
+      (match Domain.try_step m hd with
        | Domain.Ok m2 -> Domain.Ok (m2, hd)
-       | Domain.Err uu___ -> choose_candidate next m tl)
-let dispatch (next : Prims.nat -> Prims.nat) (s : server_state)
-  (baseVersion : Prims.nat) (orig : Domain.action) : (server_state * reply)=
+       | Domain.Err uu___ -> choose_candidate m tl)
+let dispatch (s : server_state) (baseVersion : Prims.nat)
+  (orig : Domain.action) : (server_state * reply)=
   let suffix = suffix_from baseVersion s.appliedLog in
   let rebased = Domain.rebase_through_suffix suffix orig in
   let cs = Domain.candidates s.present rebased in
-  match choose_candidate next s.present cs with
+  match choose_candidate s.present cs with
   | Domain.Ok (m2, chosen) ->
-      let noChange = Domain.model_eqb (fun x y -> x = y) m2 s.present in
+      let noChange = Model.model_eqb m2 s.present in
       let newApplied = FStar_List_Tot_Base.op_At s.appliedLog [chosen] in
       let rec0 =
         {
@@ -175,9 +174,9 @@ let init_client_from_server (s : server_state) : client_state=
   { baseVersion1 = (version s); present1 = (s.present); pending = [] }
 let sync (s : server_state) : client_state=
   { baseVersion1 = (version s); present1 = (s.present); pending = [] }
-let client_local_dispatch (next : Prims.nat -> Prims.nat) (c : client_state)
-  (a : Domain.action) : client_state=
-  match Domain.try_step next c.present1 a with
+let client_local_dispatch (c : client_state) (a : Domain.action) :
+  client_state=
+  match Domain.try_step c.present1 a with
   | Domain.Ok m2 ->
       {
         baseVersion1 = (c.baseVersion1);
@@ -190,41 +189,41 @@ let client_local_dispatch (next : Prims.nat -> Prims.nat) (c : client_state)
         present1 = (c.present1);
         pending = (FStar_List_Tot_Base.op_At c.pending [a])
       }
-let rec reapply_pending (next : Prims.nat -> Prims.nat) (m : model)
-  (pending : Domain.action Prims.list) : model=
+let rec reapply_pending (m : model) (pending : Domain.action Prims.list) :
+  model=
   match pending with
   | [] -> m
   | a::tl ->
       let m' =
-        match Domain.try_step next m a with
+        match Domain.try_step m a with
         | Domain.Ok m2 -> m2
         | Domain.Err uu___ -> m in
-      reapply_pending next m' tl
-let handle_realtime_update (next : Prims.nat -> Prims.nat) (c : client_state)
-  (serverVersion : Prims.nat) (serverModel : model) : client_state=
+      reapply_pending m' tl
+let handle_realtime_update (c : client_state) (serverVersion : Prims.nat)
+  (serverModel : model) : client_state=
   if serverVersion > c.baseVersion1
   then
-    let newPresent = reapply_pending next serverModel c.pending in
+    let newPresent = reapply_pending serverModel c.pending in
     {
       baseVersion1 = serverVersion;
       present1 = newPresent;
       pending = (c.pending)
     }
   else c
-let client_accept_reply (next : Prims.nat -> Prims.nat) (c : client_state)
-  (newVersion : Prims.nat) (newPresent : model) : client_state=
+let client_accept_reply (c : client_state) (newVersion : Prims.nat)
+  (newPresent : model) : client_state=
   match c.pending with
   | [] -> { baseVersion1 = newVersion; present1 = newPresent; pending = [] }
   | _hd::rest ->
-      let reapplied = reapply_pending next newPresent rest in
+      let reapplied = reapply_pending newPresent rest in
       { baseVersion1 = newVersion; present1 = reapplied; pending = rest }
-let client_reject_reply (next : Prims.nat -> Prims.nat) (c : client_state)
-  (freshVersion : Prims.nat) (freshModel : model) : client_state=
+let client_reject_reply (c : client_state) (freshVersion : Prims.nat)
+  (freshModel : model) : client_state=
   match c.pending with
   | [] ->
       { baseVersion1 = freshVersion; present1 = freshModel; pending = [] }
   | _hd::rest ->
-      let reapplied = reapply_pending next freshModel rest in
+      let reapplied = reapply_pending freshModel rest in
       { baseVersion1 = freshVersion; present1 = reapplied; pending = rest }
 let pending_count (c : client_state) : Prims.nat=
   FStar_List_Tot_Base.length c.pending

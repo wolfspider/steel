@@ -1,5 +1,5 @@
 open Prims
-type model = Prims.nat Domain.model
+type model = Model.model
 type network_status =
   | Online 
   | Offline 
@@ -116,19 +116,26 @@ let pending_count (es : effect_state) : Prims.nat=
 let has_pending (es : effect_state) : Prims.bool=
   (pending_count es) > Prims.int_zero
 let is_online (es : effect_state) : Prims.bool=
-  match es.network with | Online -> true | Offline -> false
+  match es.network with | Online -> true | Offline -> false | uu___ -> false
 let is_idle (es : effect_state) : Prims.bool=
-  match es.mode with | Idle -> true | Dispatching uu___ -> false
+  match es.mode with
+  | Idle -> true
+  | Dispatching uu___ -> false
+  | uu___ -> false
 let can_start_dispatch (es : effect_state) : Prims.bool=
   ((is_online es) && (is_idle es)) && (has_pending es)
-let first_pending_action (es : effect_state) : Domain.action=
-  match (es.client).MultiCollaboration.pending with | hd::uu___ -> hd
-let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
-  (effect_state * command)=
+let first_pending_action (es : effect_state) :
+  Domain.action FStar_Pervasives_Native.option=
+  let pending = (es.client).MultiCollaboration.pending in
+  match pending with
+  | hd::uu___ -> FStar_Pervasives_Native.Some hd
+  | [] -> FStar_Pervasives_Native.None
+  | uu___ -> FStar_Pervasives_Native.None
+let step (es : effect_state) (ev : event) : (effect_state * command)=
   match ev with
   | UserAction action ->
       let newClient =
-        MultiCollaboration.client_local_dispatch next es.client action in
+        MultiCollaboration.client_local_dispatch es.client action in
       let es1 =
         {
           network = (es.network);
@@ -138,20 +145,24 @@ let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
         } in
       if can_start_dispatch es1
       then
-        let a0 = first_pending_action es1 in
-        ({
-           network = (es1.network);
-           mode = (Dispatching Prims.int_zero);
-           client = (es1.client);
-           serverVersion = (es1.serverVersion)
-         },
-          (SendDispatch ((MultiCollaboration.client_version es1.client), a0)))
+        (match first_pending_action es1 with
+         | FStar_Pervasives_Native.Some a0 ->
+             ({
+                network = (es1.network);
+                mode = (Dispatching Prims.int_zero);
+                client = (es1.client);
+                serverVersion = (es1.serverVersion)
+              },
+               (SendDispatch
+                  ((MultiCollaboration.client_version es1.client), a0)))
+         | FStar_Pervasives_Native.None -> (es1, NoOp)
+         | uu___ -> (es1, NoOp))
       else (es1, NoOp)
   | DispatchAccepted (newVersion, newModel) ->
       (match es.mode with
        | Dispatching uu___ ->
            let newClient =
-             MultiCollaboration.client_accept_reply next es.client newVersion
+             MultiCollaboration.client_accept_reply es.client newVersion
                newModel in
            let es1 =
              {
@@ -162,17 +173,21 @@ let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
              } in
            if can_start_dispatch es1
            then
-             let a0 = first_pending_action es1 in
-             ({
-                network = (es1.network);
-                mode = (Dispatching Prims.int_zero);
-                client = (es1.client);
-                serverVersion = (es1.serverVersion)
-              },
-               (SendDispatch
-                  ((MultiCollaboration.client_version es1.client), a0)))
+             (match first_pending_action es1 with
+              | FStar_Pervasives_Native.Some a0 ->
+                  ({
+                     network = (es1.network);
+                     mode = (Dispatching Prims.int_zero);
+                     client = (es1.client);
+                     serverVersion = (es1.serverVersion)
+                   },
+                    (SendDispatch
+                       ((MultiCollaboration.client_version es1.client), a0)))
+              | FStar_Pervasives_Native.None -> (es1, NoOp)
+              | uu___1 -> (es1, NoOp))
            else (es1, NoOp)
-       | Idle -> (es, NoOp))
+       | Idle -> (es, NoOp)
+       | uu___ -> (es, NoOp))
   | DispatchConflict (freshVersion, freshModel) ->
       (match es.mode with
        | Dispatching retries ->
@@ -186,7 +201,7 @@ let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
               }, NoOp)
            else
              (let newClient =
-                MultiCollaboration.handle_realtime_update next es.client
+                MultiCollaboration.handle_realtime_update es.client
                   freshVersion freshModel in
               let es1 =
                 {
@@ -197,8 +212,23 @@ let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
                 } in
               if has_pending es1
               then
-                let a0 = first_pending_action es1 in
-                (es1, (SendDispatch (freshVersion, a0)))
+                match first_pending_action es1 with
+                | FStar_Pervasives_Native.Some a0 ->
+                    (es1, (SendDispatch (freshVersion, a0)))
+                | FStar_Pervasives_Native.None ->
+                    ({
+                       network = (es1.network);
+                       mode = Idle;
+                       client = (es1.client);
+                       serverVersion = (es1.serverVersion)
+                     }, NoOp)
+                | uu___1 ->
+                    ({
+                       network = (es1.network);
+                       mode = Idle;
+                       client = (es1.client);
+                       serverVersion = (es1.serverVersion)
+                     }, NoOp)
               else
                 ({
                    network = (es1.network);
@@ -206,13 +236,14 @@ let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
                    client = (es1.client);
                    serverVersion = (es1.serverVersion)
                  }, NoOp))
-       | Idle -> (es, NoOp))
+       | Idle -> (es, NoOp)
+       | uu___ -> (es, NoOp))
   | DispatchRejected (freshVersion, freshModel) ->
       (match es.mode with
        | Dispatching uu___ ->
            let newClient =
-             MultiCollaboration.client_reject_reply next es.client
-               freshVersion freshModel in
+             MultiCollaboration.client_reject_reply es.client freshVersion
+               freshModel in
            let es1 =
              {
                network = (es.network);
@@ -222,17 +253,21 @@ let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
              } in
            if can_start_dispatch es1
            then
-             let a0 = first_pending_action es1 in
-             ({
-                network = (es1.network);
-                mode = (Dispatching Prims.int_zero);
-                client = (es1.client);
-                serverVersion = (es1.serverVersion)
-              },
-               (SendDispatch
-                  ((MultiCollaboration.client_version es1.client), a0)))
+             (match first_pending_action es1 with
+              | FStar_Pervasives_Native.Some a0 ->
+                  ({
+                     network = (es1.network);
+                     mode = (Dispatching Prims.int_zero);
+                     client = (es1.client);
+                     serverVersion = (es1.serverVersion)
+                   },
+                    (SendDispatch
+                       ((MultiCollaboration.client_version es1.client), a0)))
+              | FStar_Pervasives_Native.None -> (es1, NoOp)
+              | uu___1 -> (es1, NoOp))
            else (es1, NoOp)
-       | Idle -> (es, NoOp))
+       | Idle -> (es, NoOp)
+       | uu___ -> (es, NoOp))
   | NetworkError ->
       ({
          network = Offline;
@@ -250,14 +285,18 @@ let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
         } in
       if can_start_dispatch es1
       then
-        let a0 = first_pending_action es1 in
-        ({
-           network = (es1.network);
-           mode = (Dispatching Prims.int_zero);
-           client = (es1.client);
-           serverVersion = (es1.serverVersion)
-         },
-          (SendDispatch ((MultiCollaboration.client_version es1.client), a0)))
+        (match first_pending_action es1 with
+         | FStar_Pervasives_Native.Some a0 ->
+             ({
+                network = (es1.network);
+                mode = (Dispatching Prims.int_zero);
+                client = (es1.client);
+                serverVersion = (es1.serverVersion)
+              },
+               (SendDispatch
+                  ((MultiCollaboration.client_version es1.client), a0)))
+         | FStar_Pervasives_Native.None -> (es1, NoOp)
+         | uu___ -> (es1, NoOp))
       else (es1, NoOp)
   | ManualGoOffline ->
       ({
@@ -276,27 +315,36 @@ let step (next : Prims.nat -> Prims.nat) (es : effect_state) (ev : event) :
         } in
       if can_start_dispatch es1
       then
-        let a0 = first_pending_action es1 in
-        ({
-           network = (es1.network);
-           mode = (Dispatching Prims.int_zero);
-           client = (es1.client);
-           serverVersion = (es1.serverVersion)
-         },
-          (SendDispatch ((MultiCollaboration.client_version es1.client), a0)))
+        (match first_pending_action es1 with
+         | FStar_Pervasives_Native.Some a0 ->
+             ({
+                network = (es1.network);
+                mode = (Dispatching Prims.int_zero);
+                client = (es1.client);
+                serverVersion = (es1.serverVersion)
+              },
+               (SendDispatch
+                  ((MultiCollaboration.client_version es1.client), a0)))
+         | FStar_Pervasives_Native.None -> (es1, NoOp)
+         | uu___ -> (es1, NoOp))
       else (es1, NoOp)
   | Tick ->
       if can_start_dispatch es
       then
-        let a0 = first_pending_action es in
-        ({
-           network = (es.network);
-           mode = (Dispatching Prims.int_zero);
-           client = (es.client);
-           serverVersion = (es.serverVersion)
-         },
-          (SendDispatch ((MultiCollaboration.client_version es.client), a0)))
+        (match first_pending_action es with
+         | FStar_Pervasives_Native.Some a0 ->
+             ({
+                network = (es.network);
+                mode = (Dispatching Prims.int_zero);
+                client = (es.client);
+                serverVersion = (es.serverVersion)
+              },
+               (SendDispatch
+                  ((MultiCollaboration.client_version es.client), a0)))
+         | FStar_Pervasives_Native.None -> (es, NoOp)
+         | uu___ -> (es, NoOp))
       else (es, NoOp)
+  | uu___ -> Prims.admit ()
 type 'es mode_consistent = Obj.t
 type 'es retries_bounded = Obj.t
 type 'es inv = unit

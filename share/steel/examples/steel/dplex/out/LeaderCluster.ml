@@ -1,5 +1,5 @@
 open Prims
-type model = Prims.nat Domain.model
+type model = Model.model
 type leader = MultiCollaboration.server_state
 type follower = MultiCollaboration.server_state
 let leader_version (l : leader) : Prims.nat= MultiCollaboration.version l
@@ -27,9 +27,9 @@ let __proj__Mkleader_commit_result__item__reply
 let __proj__Mkleader_commit_result__item__committed
   (projectee : leader_commit_result) : commit RealtimeCollaboration.option=
   match projectee with | { leader'; reply; committed;_} -> committed
-let leader_commit (next : Prims.nat -> Prims.nat) (l : leader)
-  (baseVersion : Prims.nat) (orig : Domain.action) : leader_commit_result=
-  let uu___ = MultiCollaboration.dispatch next l baseVersion orig in
+let leader_commit (l : leader) (baseVersion : Prims.nat)
+  (orig : Domain.action) : leader_commit_result=
+  let uu___ = MultiCollaboration.dispatch l baseVersion orig in
   match uu___ with
   | (l', rep) ->
       (match rep with
@@ -42,6 +42,12 @@ let leader_commit (next : Prims.nat -> Prims.nat) (l : leader)
                (RealtimeCollaboration.Some { idx = newV; act = applied })
            }
        | MultiCollaboration.Rejected (_reason, _rebased) ->
+           {
+             leader' = l';
+             reply = rep;
+             committed = RealtimeCollaboration.None
+           }
+       | uu___1 ->
            {
              leader' = l';
              reply = rep;
@@ -77,16 +83,14 @@ let leader_snapshot (l : leader) : RealtimeCollaboration.realtime_event=
     RealtimeCollaboration.version = (leader_version l);
     RealtimeCollaboration.model = (l.MultiCollaboration.present)
   }
-let client_on_snapshot (next : Prims.nat -> Prims.nat)
-  (c : RealtimeCollaboration.client_state)
+let client_on_snapshot (c : RealtimeCollaboration.client_state)
   (e : RealtimeCollaboration.realtime_event) :
   RealtimeCollaboration.client_state=
-  RealtimeCollaboration.handle_realtime_update next c
+  RealtimeCollaboration.handle_realtime_update c
     e.RealtimeCollaboration.version e.RealtimeCollaboration.model
-let rec push_snapshots (next : Prims.nat -> Prims.nat)
-  (c : RealtimeCollaboration.client_state)
+let rec push_snapshots (c : RealtimeCollaboration.client_state)
   (es : RealtimeCollaboration.realtime_event Prims.list) :
   RealtimeCollaboration.client_state=
   match es with
   | [] -> c
-  | e::tl -> push_snapshots next (client_on_snapshot next c e) tl
+  | e::tl -> push_snapshots (client_on_snapshot c e) tl

@@ -1,10 +1,11 @@
 module MultiCollaboration
 
 module D = Domain
+module M = Model
 open FStar.Sequence.Base
 open FStar.List.Tot
 
-type model = D.model nat
+type model = M.model
 
 // --------------------------
 // Server-side types
@@ -39,14 +40,14 @@ let version (s:server_state) : nat =
   length s.appliedLog
 
 let init_server () : server_state =
-  { present = D.init 0; appliedLog = []; auditLog = [] }
+  { present = D.init (); appliedLog = []; auditLog = [] }
 
 let init_server_satisfies_inv ()
   : Lemma (ensures D.inv (init_server ()).present)
   = admit ()
 
 // --------------------------
-// Helpers replacing Dafny slicing
+// Helpers
 // --------------------------
 
 let pred_nat (n:nat) : Tot nat =
@@ -67,27 +68,24 @@ let rec drop_nat (#a:Type0) (n:nat) (xs:list a) : Tot (list a)
 let suffix_from (#a:Type0) (baseVersion:nat) (xs:list a) : Tot (list a) =
   drop_nat baseVersion xs
 
-
 // --------------------------
 // ChooseCandidate (executable)
 // --------------------------
 
-let rec choose_candidate (next: nat -> nat) (m:model) (cs:list D.action)
+let rec choose_candidate (m:model) (cs:list D.action)
   : D.result (model * D.action) D.err
   = match cs with
     | [] -> D.Err (D.reject_err ())
     | hd::tl ->
-        match D.try_step next m hd with
+        match D.try_step m hd with
         | D.Ok m2  -> D.Ok (m2, hd)
-        | D.Err _  -> choose_candidate next m tl
-
+        | D.Err _  -> choose_candidate m tl
 
 // --------------------------
 // Dispatch (executable)
 // --------------------------
 
-let dispatch (next: nat -> nat)
-             (s:server_state)
+let dispatch (s:server_state)
              (baseVersion:nat{baseVersion <= version s})
              (orig:D.action)
   : server_state * reply
@@ -96,9 +94,9 @@ let dispatch (next: nat -> nat)
   let rebased = D.rebase_through_suffix suffix orig in
   let cs      = D.candidates s.present rebased in
 
-  match choose_candidate next s.present cs with
+  match choose_candidate s.present cs with
   | D.Ok (m2, chosen) ->
-      let noChange = D.model_eqb (fun x y -> x = y) m2 s.present in
+      let noChange = M.model_eqb m2 s.present in
       let newApplied = s.appliedLog @ [chosen] in
       let rec0 : request_record =
         { baseVersion = baseVersion;
@@ -140,42 +138,42 @@ let init_client_from_server (s:server_state) : client_state =
 let sync (s:server_state) : client_state =
   { baseVersion = version s; present = s.present; pending = [] }
 
-let client_local_dispatch (next: nat -> nat) (c:client_state) (a:D.action) : client_state =
-  match D.try_step next c.present a with
+let client_local_dispatch (c:client_state) (a:D.action) : client_state =
+  match D.try_step c.present a with
   | D.Ok m2 -> { c with present = m2; pending = c.pending @ [a] }
   | D.Err _ -> { c with pending = c.pending @ [a] }
 
-let rec reapply_pending (next: nat -> nat) (m:model) (pending:list D.action) : Tot model
+let rec reapply_pending (m:model) (pending:list D.action) : Tot model
   (decreases pending)
 =
   match pending with
   | [] -> m
   | a::tl ->
       let m' =
-        match D.try_step next m a with
+        match D.try_step m a with
         | D.Ok m2 -> m2
         | D.Err _ -> m
       in
-      reapply_pending next m' tl
+      reapply_pending m' tl
 
-let handle_realtime_update (next: nat -> nat) (c:client_state) (serverVersion:nat) (serverModel:model) : client_state =
+let handle_realtime_update (c:client_state) (serverVersion:nat) (serverModel:model) : client_state =
   if serverVersion > c.baseVersion then
-    let newPresent = reapply_pending next serverModel c.pending in
+    let newPresent = reapply_pending serverModel c.pending in
     { baseVersion = serverVersion; present = newPresent; pending = c.pending }
   else c
 
-let client_accept_reply (next: nat -> nat) (c:client_state) (newVersion:nat) (newPresent:model) : client_state =
+let client_accept_reply (c:client_state) (newVersion:nat) (newPresent:model) : client_state =
   match c.pending with
   | [] -> { baseVersion = newVersion; present = newPresent; pending = [] }
   | _hd::rest ->
-      let reapplied = reapply_pending next newPresent rest in
+      let reapplied = reapply_pending newPresent rest in
       { baseVersion = newVersion; present = reapplied; pending = rest }
 
-let client_reject_reply (next: nat -> nat) (c:client_state) (freshVersion:nat) (freshModel:model) : client_state =
+let client_reject_reply (c:client_state) (freshVersion:nat) (freshModel:model) : client_state =
   match c.pending with
   | [] -> { baseVersion = freshVersion; present = freshModel; pending = [] }
   | _hd::rest ->
-      let reapplied = reapply_pending next freshModel rest in
+      let reapplied = reapply_pending freshModel rest in
       { baseVersion = freshVersion; present = reapplied; pending = rest }
 
 let pending_count (c:client_state) : nat = length c.pending
@@ -189,12 +187,12 @@ let client_version (c:client_state) : nat = c.baseVersion
 assume val dispatch_preserves_inv :
   s:server_state -> baseVersion:nat -> orig:D.action ->
   Lemma (requires baseVersion <= version s /\ D.inv s.present)
-        (ensures  forall (next: nat -> nat). D.inv (fst (dispatch next s baseVersion orig)).present)
+        (ensures  D.inv (fst (dispatch s baseVersion orig)).present)
 
 assume val dispatch_reject_is_minimal :
   s:server_state -> baseVersion:nat -> orig:D.action -> aGood:D.action -> m2:model ->
   Lemma (requires baseVersion <= version s /\
                 D.inv s.present /\
                 D.explains (D.rebase_through_suffix (suffix_from baseVersion s.appliedLog) orig) aGood /\
-                (exists (next: nat -> nat). D.try_step next s.present aGood == D.Ok m2))
+                D.try_step s.present aGood == D.Ok m2)
         (ensures  True)
