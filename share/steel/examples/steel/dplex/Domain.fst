@@ -1,43 +1,42 @@
 module Domain
-open FStar.List.Tot.Base
+module L = FStar.List.Tot.Base
 
-assume new type model  : eqtype
-assume new type action : eqtype
-assume new type err    : Type0
-
+type model (t:Type) = t
+type action =
+  | Step
+  | Sync
+  | Flush
+type err = unit
 type result (t:Type0) (e:Type0) =
   | Ok  : value:t -> result t e
   | Err : error:e -> result t e
-
-assume val reject_err : unit -> err
-
-assume val inv      : model -> prop
-assume val init     : unit -> model
-assume val try_step : model -> action -> result model err
-
-assume val init_satisfies_inv : unit -> Lemma (inv (init ()))
-
+let reject_err (_:unit) : err = ()
+assume val inv (#t:Type) : model t -> prop
+let init (#t:Type) (zero:t) : model t = zero
+let try_step (#t:Type) (next: t -> t) (m:model t) (a:action) : result (model t) err =
+  match a with
+  | Step  -> Ok (next m)
+  | Sync  -> Ok m
+  | Flush -> Ok m
+assume val init_satisfies_inv : (#t:Type) -> (zero:t) -> Lemma (inv (init zero))
 assume val step_preserves_inv :
-  m:model -> a:action -> m2:model ->
-  Lemma (requires inv m /\ try_step m a == Ok m2)
+  (#t:Type) ->
+  m:model t -> a:action -> m2:model t ->
+  Lemma (requires inv m /\ (exists (next: t -> t). try_step next m a == Ok m2))
         (ensures  inv m2)
-
-assume val rebase : remote:action -> local:action -> action
-
+let rebase (_remote:action) (local:action) : action = local
 let rebase_through_suffix (suffix:list action) (a:action) : action =
-  fold_left (fun acc remote -> rebase remote acc) a (rev suffix)
-
-assume val candidates : model -> action -> list action
-assume val explains   : action -> action -> prop
-
+  L.fold_left (fun acc remote -> rebase remote acc) a (L.rev suffix)
+let candidates (#t:Type) (_m:model t) (orig:action) : list action = [orig]
+assume val explains : action -> action -> prop
 assume val candidates_complete :
-  m:model -> orig:action -> a_good:action -> m2:model ->
-  Lemma (requires inv m /\ explains orig a_good /\ try_step m a_good == Ok m2)
-        (ensures  mem a_good (candidates m orig))
-
-// A computable equality test for models (needed for noChange)
-assume val model_eqb : model -> model -> bool
-
-// Optional: relate it to propositional equality (useful later for proofs)
-assume val model_eqb_spec : x:model -> y:model -> Lemma (ensures (model_eqb x y <==> (x == y)))
-
+  (#t:Type) ->
+  m:model t -> orig:action -> a_good:action -> m2:model t ->
+  Lemma (requires inv m /\ explains orig a_good /\ (exists (next: t -> t). try_step next m a_good == Ok m2))
+        (ensures  L.mem a_good (candidates m orig))
+let model_eqb (#t:Type) (eqb: t -> t -> bool) (x:model t) (y:model t) : bool =
+  eqb x y
+assume val model_eqb_spec :
+  (#t:Type) ->
+  x:model t -> y:model t ->
+  Lemma (ensures (forall (eqb: t -> t -> bool). model_eqb eqb x y <==> (x == y)))

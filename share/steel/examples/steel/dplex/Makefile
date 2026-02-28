@@ -35,6 +35,12 @@ ml: out/.ml.stamp
 out/.ml.stamp: PingPongTest.fst check | out
 	$(FSTAR) $(FSTAR_OPTIONS) --cache_dir $(CACHE_DIR) --cache_checked_modules \
 	  --codegen OCaml --odir out PingPongTest.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Domain.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out MultiCollaboration.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out EffectStateMachine.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out EffectSystemProperties.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out RealTimeCollaboration.fst
+	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out LeaderCluster.fst
 	@printf '%s\n' \
 'let () =' \
 '  print_endline "PingPongTest extracted (OCaml)";' \

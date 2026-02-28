@@ -5,6 +5,8 @@ module D  = Domain
 
 open FStar.List.Tot
 
+type model = D.model nat
+
 // ============================================================================
 // Local Option
 // ============================================================================
@@ -29,14 +31,14 @@ type client_state = {
 
 // Accessors delegating to base
 let base_version (c:client_state) : nat = MC.client_version c.base
-let present      (c:client_state) : D.model = MC.client_model c.base
+let present      (c:client_state) : model = MC.client_model c.base
 let pending      (c:client_state) : list D.action = c.base.pending
 
 // ============================================================================
 // Init / Sync
 // ============================================================================
 
-let init_client (v:nat) (m:D.model) : client_state =
+let init_client (v:nat) (m:model) : client_state =
   { base = MC.init_client v m; mode = Normal }
 
 let sync (server:MC.server_state) : client_state =
@@ -46,24 +48,25 @@ let sync (server:MC.server_state) : client_state =
 // Local dispatch (optimistic update): delegate to MC, preserve mode
 // ============================================================================
 
-let local_dispatch (c:client_state) (a:D.action) : client_state =
-  let b' = MC.client_local_dispatch c.base a in
+let local_dispatch (next: nat -> nat) (c:client_state) (a:D.action) : client_state =
+  let b' = MC.client_local_dispatch next c.base a in
   { base = b'; mode = c.mode }
 
 // ============================================================================
 // Realtime update handling: KEY FIX (skip while flushing or offline)
 // ============================================================================
 
-let handle_realtime_update (c:client_state)
+let handle_realtime_update (next: nat -> nat)
+                           (c:client_state)
                            (serverVersion:nat)
-                           (serverModel:D.model)
+                           (serverModel:model)
   : client_state
 =
   match c.mode with
   | Flushing -> c
   | Offline  -> c
   | Normal   ->
-      let b' = MC.handle_realtime_update c.base serverVersion serverModel in
+      let b' = MC.handle_realtime_update next c.base serverVersion serverModel in
       { base = b'; mode = Normal }
 
 // ============================================================================
@@ -81,7 +84,6 @@ let enter_flush_mode (c:client_state)
 
 
 let exit_flush_mode (c:client_state) (server:MC.server_state) : client_state =
-  // Exit flush mode implies a Sync, which puts us back in Normal.
   sync server
 
 type flush_one_result = {
@@ -90,18 +92,17 @@ type flush_one_result = {
   reply  : MC.reply;
 }
 
-// Flush one pending action (if any)
-let flush_one (server:MC.server_state)
+let flush_one (next: nat -> nat)
+              (server:MC.server_state)
               (client:client_state{base_version client <= MC.version server})
   : Tot (option flush_one_result)
 =
   match pending client with
   | [] -> None
   | action::rest ->
-      let (newServer, rep) = MC.dispatch server (base_version client) action in
+      let (newServer, rep) = MC.dispatch next server (base_version client) action in
       (match rep with
        | MC.Accepted newVersion newPresent applied noChange ->
-           // Dafny built a new MC.ClientState(newVersion, newPresent, rest)
            let newBase : MC.client_state =
              { baseVersion = newVersion; present = newPresent; pending = rest }
            in
@@ -109,8 +110,6 @@ let flush_one (server:MC.server_state)
            Some { server = newServer; client = newClient; reply = rep }
 
        | MC.Rejected reason rebased ->
-           // Dafny: baseVersion := Version(server), present := server.present
-           // (NOTE: uses the *old* server, as your Dafny does)
            let newBase : MC.client_state =
              { baseVersion = MC.version server; present = server.present; pending = rest }
            in
@@ -123,8 +122,8 @@ type flush_all_result = {
   replies : list MC.reply;
 }
 
-// Flush all pending actions (recursive)
 let rec flush_all
+  (next: nat -> nat)
   (server:MC.server_state)
   (client:client_state{
             base_version client <= MC.version server /\
@@ -137,17 +136,13 @@ let rec flush_all
       { server = server; client = client; replies = [] }
 
   | _::_ ->
-      (match flush_one server client with
+      (match flush_one next server client with
        | None ->
-           // Should be unreachable because pending nonempty, but keep total.
            { server = server; client = client; replies = [] }
 
        | Some r ->
-           // In Dafny there was an extra check:
-           // if BaseVersion(result.client) <= Version(result.server) then recurse
-           // We'll keep it exactly.
            if base_version r.client <= MC.version r.server then
-             let rest = flush_all r.server r.client in
+             let rest = flush_all next r.server r.client in
              { server = rest.server;
                client = rest.client;
                replies = r.reply :: rest.replies }
@@ -163,12 +158,13 @@ type flush_cycle_result = {
 }
 
 let flush_cycle
+  (next: nat -> nat)
   (server:MC.server_state)
   (client:client_state{base_version client <= MC.version server})
   : Tot flush_cycle_result
 =
   let flushingClient = enter_flush_mode client in
-  let all = flush_all server flushingClient in
+  let all = flush_all next server flushingClient in
   let finalClient = exit_flush_mode all.client all.server in
   { server = all.server; client = finalClient; replies = all.replies }
 
@@ -178,10 +174,11 @@ let flush_cycle
 
 type realtime_event = {
   version : nat;
-  model   : D.model;
+  model   : model;
 }
 
 let rec process_realtime_events
+  (next: nat -> nat)
   (client:client_state)
   (events:list realtime_event)
   : Tot client_state
@@ -190,43 +187,36 @@ let rec process_realtime_events
   match events with
   | [] -> client
   | e::tl ->
-      let client' = handle_realtime_update client e.version e.model in
-      process_realtime_events client' tl
+      let client' = handle_realtime_update next client e.version e.model in
+      process_realtime_events next client' tl
 
 
 let rec realtime_events_skipped_during_flush
+  (next: nat -> nat)
   (client:client_state{client.mode == Flushing})
   (events:list realtime_event)
-  : Lemma (ensures process_realtime_events client events == client)
+  : Lemma (ensures process_realtime_events next client events == client)
   (decreases events)
 =
   match events with
   | [] -> ()
   | e::tl ->
-      // By definition, handle_realtime_update returns client unchanged when Flushing
-      assert (handle_realtime_update client e.version e.model == client);
-      realtime_events_skipped_during_flush client tl
-
+      assert (handle_realtime_update next client e.version e.model == client);
+      realtime_events_skipped_during_flush next client tl
 
 
 let flush_with_realtime_events
+  (next: nat -> nat)
   (server:MC.server_state)
   (client:client_state{base_version client <= MC.version server})
   (events:list realtime_event)
   : Tot flush_cycle_result
 =
   let flushingClient = enter_flush_mode client in
-
-  // You can still compute it if you want the model to “look” like Dafny:
-  let afterEvents = process_realtime_events flushingClient events in
-
-  // But prove it’s actually a no-op during flush:
-  realtime_events_skipped_during_flush flushingClient events;
+  let afterEvents = process_realtime_events next flushingClient events in
+  realtime_events_skipped_during_flush next flushingClient events;
   assert (afterEvents == flushingClient);
-
-  // Easiest: just pass flushingClient (already refined) to flush_all
-  let all = flush_all server flushingClient in
-
+  let all = flush_all next server flushingClient in
   let finalClient = exit_flush_mode all.client all.server in
   { server = all.server; client = finalClient; replies = all.replies }
 
@@ -235,26 +225,20 @@ let flush_with_realtime_events
 // Key lemma: events are skipped during flush
 // ============================================================================
 
-// Main theorem: flush with events == flush without events
-// This is “easy” once you have the lemma above, but to keep things shallow,
-// we can keep it as a proof hook if you want to avoid rewriting equalities
-// about record construction and the exact path.
-//
-// If you want it proved now, we can do it, but the hook keeps it painless.
 assume val flush_with_realtime_events_equivalent
   : server:MC.server_state ->
     client:client_state ->
     events:list realtime_event ->
     Lemma (requires base_version client <= MC.version server)
-          (ensures  flush_with_realtime_events server client events
-                    == flush_cycle server client)
+          (ensures  forall (next: nat -> nat).
+                      flush_with_realtime_events next server client events
+                      == flush_cycle next server client)
 
-// Additional property: After flush cycle, client is synced with server
 assume val flush_cycle_client_synced
   : server:MC.server_state ->
     client:client_state ->
     Lemma (requires base_version client <= MC.version server)
-          (ensures
-            (let r = flush_cycle server client in
-            present r.client == r.server.present /\
-            base_version r.client == MC.version r.server))
+          (ensures  forall (next: nat -> nat).
+                      (let r = flush_cycle next server client in
+                      present r.client == r.server.present /\
+                      base_version r.client == MC.version r.server))

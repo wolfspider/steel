@@ -5,6 +5,8 @@ module D  = Domain
 
 open FStar.List.Tot
 
+type model = D.model nat
+
 // ============================================================================
 // Effect state
 // ============================================================================
@@ -32,9 +34,9 @@ let max_retries : nat = 5
 
 type event =
   | UserAction       : action:D.action -> event
-  | DispatchAccepted : newVersion:nat -> newModel:D.model -> event
-  | DispatchConflict : freshVersion:nat -> freshModel:D.model -> event
-  | DispatchRejected : freshVersion:nat -> freshModel:D.model -> event
+  | DispatchAccepted : newVersion:nat -> newModel:model -> event
+  | DispatchConflict : freshVersion:nat -> freshModel:model -> event
+  | DispatchRejected : freshVersion:nat -> freshModel:model -> event
   | NetworkError
   | NetworkRestored
   | ManualGoOffline
@@ -81,11 +83,11 @@ let first_pending_action (es:effect_state{has_pending es}) : D.action =
 // Main transition
 // ============================================================================
 
-let step (es:effect_state) (ev:event) : effect_state * command =
+let step (next: nat -> nat) (es:effect_state) (ev:event) : effect_state * command =
   match ev with
 
   | UserAction action ->
-      let newClient = MC.client_local_dispatch es.client action in
+      let newClient = MC.client_local_dispatch next es.client action in
       let es1 = { es with client = newClient } in
       if can_start_dispatch es1 then
         let a0 = first_pending_action es1 in
@@ -97,7 +99,7 @@ let step (es:effect_state) (ev:event) : effect_state * command =
   | DispatchAccepted newVersion newModel ->
       (match es.mode with
        | Dispatching _ ->
-           let newClient = MC.client_accept_reply es.client newVersion newModel in
+           let newClient = MC.client_accept_reply next es.client newVersion newModel in
            let es1 =
              { network = es.network; mode = Idle; client = newClient; serverVersion = newVersion }
            in
@@ -117,7 +119,7 @@ let step (es:effect_state) (ev:event) : effect_state * command =
              ({ es with mode = Idle }, NoOp)
            else
              let newClient =
-               MC.handle_realtime_update es.client freshVersion freshModel
+               MC.handle_realtime_update next es.client freshVersion freshModel
              in
              let es1 =
                { network = es.network;
@@ -129,7 +131,6 @@ let step (es:effect_state) (ev:event) : effect_state * command =
                let a0 = first_pending_action es1 in
                (es1, SendDispatch freshVersion a0)
              else
-               // Dafny calls this "dead code"; keep total by going idle.
                ({ es1 with mode = Idle }, NoOp)
        | Idle ->
            (es, NoOp))
@@ -138,7 +139,7 @@ let step (es:effect_state) (ev:event) : effect_state * command =
       (match es.mode with
        | Dispatching _ ->
            let newClient =
-             MC.client_reject_reply es.client freshVersion freshModel
+             MC.client_reject_reply next es.client freshVersion freshModel
            in
            let es1 =
              { network = es.network; mode = Idle; client = newClient; serverVersion = freshVersion }
@@ -205,19 +206,19 @@ let inv (es:effect_state) : prop =
 // Init
 // ============================================================================
 
-let init (version:nat) (model:D.model) : effect_state =
+let init (version:nat) (m:model) : effect_state =
   { network = Online;
     mode = Idle;
-    client = MC.init_client version model;
+    client = MC.init_client version m;
     serverVersion = version }
 
 // ============================================================================
-// Proof hooks (keep as assumptions for now, like MultiCollaboration)
+// Proof hooks
 // ============================================================================
 
-assume val init_satisfies_inv : v:nat -> m:D.model ->
+assume val init_satisfies_inv : v:nat -> m:model ->
   Lemma (ensures inv (init v m))
 
 assume val step_preserves_inv : es:effect_state -> ev:event ->
   Lemma (requires inv es)
-        (ensures  inv (fst (step es ev)))
+        (ensures  forall (next: nat -> nat). inv (fst (step next es ev)))

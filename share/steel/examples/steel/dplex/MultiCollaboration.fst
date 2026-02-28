@@ -4,6 +4,7 @@ module D = Domain
 open FStar.Sequence.Base
 open FStar.List.Tot
 
+type model = D.model nat
 
 // --------------------------
 // Server-side types
@@ -13,7 +14,7 @@ type reject_reason =
   | DomainInvalid
 
 type reply =
-  | Accepted : newVersion:nat -> newPresent:D.model -> applied:D.action -> noChange:bool -> reply
+  | Accepted : newVersion:nat -> newPresent:model -> applied:D.action -> noChange:bool -> reply
   | Rejected : reason:reject_reason -> rebased:D.action -> reply
 
 type request_outcome =
@@ -29,7 +30,7 @@ type request_record = {
 }
 
 type server_state = {
-  present    : D.model;
+  present    : model;
   appliedLog : list D.action;
   auditLog   : list request_record
 }
@@ -38,11 +39,10 @@ let version (s:server_state) : nat =
   length s.appliedLog
 
 let init_server () : server_state =
-  { present = D.init (); appliedLog = []; auditLog = [] }
+  { present = D.init 0; appliedLog = []; auditLog = [] }
 
-// If you want a proof-only fact here, keep it assumed (don’t admit in executable code)
-let init_server_satisfies_inv () 
-  : Lemma (ensures D.inv (init_server ()).present) 
+let init_server_satisfies_inv ()
+  : Lemma (ensures D.inv (init_server ()).present)
   = admit ()
 
 // --------------------------
@@ -72,24 +72,22 @@ let suffix_from (#a:Type0) (baseVersion:nat) (xs:list a) : Tot (list a) =
 // ChooseCandidate (executable)
 // --------------------------
 
-let rec choose_candidate (m:D.model) (cs:list D.action)
-  : D.result (D.model * D.action) D.err
+let rec choose_candidate (next: nat -> nat) (m:model) (cs:list D.action)
+  : D.result (model * D.action) D.err
   = match cs with
     | [] -> D.Err (D.reject_err ())
     | hd::tl ->
-        match D.try_step m hd with
+        match D.try_step next m hd with
         | D.Ok m2  -> D.Ok (m2, hd)
-        | D.Err _  -> choose_candidate m tl
-
+        | D.Err _  -> choose_candidate next m tl
 
 
 // --------------------------
 // Dispatch (executable)
 // --------------------------
-//
-// We keep the Dafny requires as a refinement on baseVersion to make it runnable
-// (no need to thread proofs yet).
-let dispatch (s:server_state)
+
+let dispatch (next: nat -> nat)
+             (s:server_state)
              (baseVersion:nat{baseVersion <= version s})
              (orig:D.action)
   : server_state * reply
@@ -98,11 +96,9 @@ let dispatch (s:server_state)
   let rebased = D.rebase_through_suffix suffix orig in
   let cs      = D.candidates s.present rebased in
 
-  match choose_candidate s.present cs with
+  match choose_candidate next s.present cs with
   | D.Ok (m2, chosen) ->
-      // If you later want to *prove* inv preservation, call D.step_preserves_inv
-      // inside a lemma, not in executable code (or keep it as a ghost call).
-      let noChange = D.model_eqb m2 s.present in
+      let noChange = D.model_eqb (fun x y -> x = y) m2 s.present in
       let newApplied = s.appliedLog @ [chosen] in
       let rec0 : request_record =
         { baseVersion = baseVersion;
@@ -131,11 +127,11 @@ let dispatch (s:server_state)
 
 type client_state = {
   baseVersion : nat;
-  present     : D.model;
+  present     : model;
   pending     : list D.action
 }
 
-let init_client (v:nat) (m:D.model) : client_state =
+let init_client (v:nat) (m:model) : client_state =
   { baseVersion = v; present = m; pending = [] }
 
 let init_client_from_server (s:server_state) : client_state =
@@ -144,72 +140,61 @@ let init_client_from_server (s:server_state) : client_state =
 let sync (s:server_state) : client_state =
   { baseVersion = version s; present = s.present; pending = [] }
 
-// Optimistic local dispatch: apply if it succeeds, always enqueue
-let client_local_dispatch (c:client_state) (a:D.action) : client_state =
-  match D.try_step c.present a with
+let client_local_dispatch (next: nat -> nat) (c:client_state) (a:D.action) : client_state =
+  match D.try_step next c.present a with
   | D.Ok m2 -> { c with present = m2; pending = c.pending @ [a] }
   | D.Err _ -> { c with pending = c.pending @ [a] }
 
-// Reapply pending actions to a model
-let rec reapply_pending (m:D.model) (pending:list D.action) : Tot D.model
+let rec reapply_pending (next: nat -> nat) (m:model) (pending:list D.action) : Tot model
   (decreases pending)
 =
   match pending with
   | [] -> m
   | a::tl ->
       let m' =
-        match D.try_step m a with
+        match D.try_step next m a with
         | D.Ok m2 -> m2
         | D.Err _ -> m
       in
-      reapply_pending m' tl
+      reapply_pending next m' tl
 
-
-
-let handle_realtime_update (c:client_state) (serverVersion:nat) (serverModel:D.model) : client_state =
+let handle_realtime_update (next: nat -> nat) (c:client_state) (serverVersion:nat) (serverModel:model) : client_state =
   if serverVersion > c.baseVersion then
-    let newPresent = reapply_pending serverModel c.pending in
+    let newPresent = reapply_pending next serverModel c.pending in
     { baseVersion = serverVersion; present = newPresent; pending = c.pending }
   else c
 
-let client_accept_reply (c:client_state) (newVersion:nat) (newPresent:D.model) : client_state =
+let client_accept_reply (next: nat -> nat) (c:client_state) (newVersion:nat) (newPresent:model) : client_state =
   match c.pending with
   | [] -> { baseVersion = newVersion; present = newPresent; pending = [] }
   | _hd::rest ->
-      let reapplied = reapply_pending newPresent rest in
+      let reapplied = reapply_pending next newPresent rest in
       { baseVersion = newVersion; present = reapplied; pending = rest }
 
-let client_reject_reply (c:client_state) (freshVersion:nat) (freshModel:D.model) : client_state =
+let client_reject_reply (next: nat -> nat) (c:client_state) (freshVersion:nat) (freshModel:model) : client_state =
   match c.pending with
   | [] -> { baseVersion = freshVersion; present = freshModel; pending = [] }
   | _hd::rest ->
-      let reapplied = reapply_pending freshModel rest in
+      let reapplied = reapply_pending next freshModel rest in
       { baseVersion = freshVersion; present = reapplied; pending = rest }
 
-// Accessors
 let pending_count (c:client_state) : nat = length c.pending
-let client_model   (c:client_state) : D.model = c.present
+let client_model   (c:client_state) : model = c.present
 let client_version (c:client_state) : nat = c.baseVersion
 
 // --------------------------
-// Proof hooks (assumptions for now)
+// Proof hooks
 // --------------------------
-//
-// Keep these as assume val, like Domain. Note the unit -> Lemma style.
 
 assume val dispatch_preserves_inv :
   s:server_state -> baseVersion:nat -> orig:D.action ->
   Lemma (requires baseVersion <= version s /\ D.inv s.present)
-        (ensures  D.inv (fst (dispatch s baseVersion orig)).present)
+        (ensures  forall (next: nat -> nat). D.inv (fst (dispatch next s baseVersion orig)).present)
 
-// Minimal-reject property, same story as Dafny.
-// We keep it as a hook; you can prove it later once Domain provides real CandidatesComplete etc.
 assume val dispatch_reject_is_minimal :
-  s:server_state -> baseVersion:nat -> orig:D.action -> aGood:D.action -> m2:D.model ->
+  s:server_state -> baseVersion:nat -> orig:D.action -> aGood:D.action -> m2:model ->
   Lemma (requires baseVersion <= version s /\
                 D.inv s.present /\
                 D.explains (D.rebase_through_suffix (suffix_from baseVersion s.appliedLog) orig) aGood /\
-                D.try_step s.present aGood == D.Ok m2)
+                (exists (next: nat -> nat). D.try_step next s.present aGood == D.Ok m2))
         (ensures  True)
-
-
