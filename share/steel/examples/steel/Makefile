@@ -1,4 +1,4 @@
-all: verify counter llist2 llist3
+all: verify counter llist2 llist3 twolockq dplex
 
 # assuming share/steel/examples/steel
 STEEL_HOME ?= ../../../..

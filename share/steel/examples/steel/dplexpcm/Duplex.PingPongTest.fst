@@ -1,4 +1,4 @@
-module Duplex.PingPong
+module Duplex.PingPongTest
 open FStar.PCM
 open Steel.Memory
 open Steel.Effect.Atomic
