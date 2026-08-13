@@ -15,10 +15,11 @@
 *)
 
 module Steel.ST.Effect.Ghost
-friend Steel.ST.Effect.AtomicAndGhost
 friend Steel.Effect.Atomic
+friend Steel.ST.Effect.AtomicAndGhost
 open Steel.Memory
 module SEA = Steel.Effect.Atomic
+module NMSTTotal = Steel.NMSTTotal
 
 
 /// Any Steel ghost computation can always be lifted to an atomic computation if needed.
@@ -30,8 +31,8 @@ let lift_ghost_atomic
     (#framed:bool)
     (#[@@@ defer_to framing_implicit] pre:pre_t)
     (#[@@@ defer_to framing_implicit] post:post_t a)
-    (#[@@@ defer_to framing_implicit] req:Type0)
-    (#[@@@ defer_to framing_implicit] ens:a -> Type0)
+    (#[@@@ defer_to framing_implicit] req:pure_pre)
+    (#[@@@ defer_to framing_implicit] ens:pure_post a)
     (f:STAG.repr a framed opened Unobservable pre post req ens)
   : STAG.repr a framed opened Unobservable pre post req ens
   = f

@@ -351,13 +351,13 @@ let wand (p1 p2: slprop u#a) : slprop u#a =
         interp p1 h1 ==>
         interp p2 (join h h1))
 
-let h_exists_body (#[@@@strictly_positive] a:Type u#b)
+let h_exists_body (#a:Type u#b)
                   ([@@@strictly_positive] f: (a -> slprop u#a))
                   (h:heap)
                   (x:a) : prop =
   interp (f x) h
 
-let h_exists  (#[@@@strictly_positive] a:Type u#b)
+let h_exists (#a:Type u#b)
               ([@@@strictly_positive] f: (a -> slprop u#a)) : slprop u#a =
   as_slprop (fun (h: heap) -> exists x. h_exists_body f h x)
 
@@ -754,9 +754,9 @@ let sel_lemma (#a:_) (#pcm:_) (r:ref a pcm) (m:full_hheap (ptr r))
   = let Ref _ _ _ v = select_addr m (Addr?._0 r) in
     assert (sel r m == v);
     compatible_refl pcm v
-  
+
 let witnessed_ref_stability #a #pcm (r:ref a pcm) (fact:a -> prop)
-  = let fact_h = witnessed_ref r fact in
+  = let unfold fact_h = witnessed_ref r fact in
     let aux (h0 h1:full_heap)
       : Lemma
         (requires

@@ -250,7 +250,7 @@ let affine_star (p q:slprop) (m:mem) =
 let iname = nat
 module S = FStar.Set
 module L = FStar.List.Tot
-module W = FStar.Witnessed.Core
+module W = Steel.Witnessed.Core
 
 let rec lock_store_invariant (e:inames) (l:lock_store u#a) : slprop u#a =
   let current_addr = L.length l - 1 in
@@ -422,7 +422,7 @@ let dep_hprop_is_affine0
   H.join_commutative h2' h1;
   assert (H.join h h' == h1 `H.join` h2')
 
-let impl_intro_gen (#p: Type0) (#q: Type0) ($prf: (squash p -> Lemma (q )))
+let impl_intro_gen (#p: prop) (#q: prop) ($prf: (squash p -> Lemma (q )))
     : Lemma (p ==> q)
 = Classical.impl_intro_gen #p #(fun _ -> q) prf
 

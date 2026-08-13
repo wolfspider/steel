@@ -20,7 +20,7 @@ module P = FStar.Preorder
 
 open FStar.Tactics
 
-open FStar.NMST
+open Steel.NMST
 
 
 (*
@@ -128,7 +128,7 @@ type post_t (st:st) (a:Type) = a -> st.hprop
 (**** End expects, provides defns ****)
 
 
-effect Mst (a:Type) (#st:st) (req:st.mem -> Type0) (ens:st.mem -> a -> st.mem -> Type0) =
+effect Mst (a:Type) (#st:st) (req:st.mem -> prop) (ens:st.mem -> a -> st.mem -> prop) =
   NMSTATE a st.mem st.evolves req ens
 
 
@@ -258,13 +258,13 @@ type step_result (st:st) (a:Type u#a) =
 
 unfold
 let step_req (#st:st) (#a:Type u#a) (#pre:st.hprop) (#post:post_t st a) (f:m st a pre post)
-: st.mem -> Type0
+: st.mem -> prop
 = fun m0 -> st.interp (pre `st.star` st.invariant m0) m0
 
 unfold
 let step_ens (#st:st) (#a:Type u#a) (#pre:st.hprop) (#post:post_t st a)
   (f:m st a pre post)
-: st.mem -> step_result st a -> st.mem -> Type0
+: st.mem -> step_result st a -> st.mem -> prop
 = fun m0 r m1 ->
   let Step #_ #_ #next_pre #next_post  _ = r in
   st.interp (next_pre `st.star` st.invariant m1) m1 /\
@@ -520,7 +520,7 @@ let step_act (#st:st) (#a:Type u#a) (#pre:st.hprop) (#post:post_t st a)
   let x = f () in
   Step (Ret post x)
 
-module M = FStar.MST
+module M = Steel.MST
 
 let step_bind_ret_aux (#st:st) (#a:Type) (#pre:st.hprop) (#post:post_t st a)
   (f:m st a pre post{Bind? f /\ Ret? (Bind?.f f)})

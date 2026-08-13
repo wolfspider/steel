@@ -131,7 +131,7 @@ let rec hp_of (p:vprop) = match p with
 [@@ __steel_reduce__]
 let rec t_of (p:vprop) = match p with
   | VUnit p -> p.t
-  | VStar p1 p2 -> t_of p1 * t_of p2
+  | VStar p1 p2 -> t_of p1 & t_of p2
 
 /// Extracting the selector from a vprop
 [@@ __steel_reduce__]
@@ -155,7 +155,7 @@ noextract
 let hmem (p:vprop) = hmem (hp_of p)
 
 /// Abstract predicate for vprop implication. Currently implemented as an implication on the underlying slprop
-val can_be_split (p q:pre_t) : Type0
+val can_be_split (p q:pre_t) : prop
 
 /// Exposing the implementation of `can_be_split` when needed for proof purposes
 val reveal_can_be_split (_:unit) : Lemma
@@ -252,7 +252,7 @@ let can_be_split_forall_dep_congr_r
 
 /// To simplify the implementation of the framing tactic, dependent equivalence
 /// is defined as a double dependent implication
-let equiv_forall (#a:Type) (t1 t2:post_t a) : Type0
+let equiv_forall (#a:Type) (t1 t2:post_t a) : prop
   = t1 `can_be_split_forall` t2 /\ t2 `can_be_split_forall` t1
 
 /// This equivalence models a context restriction at the end of a Steel computation;
@@ -308,9 +308,9 @@ val reveal_mk_rmem (r:vprop) (h:hmem r) (r0:vprop{r `can_be_split` r0})
 
 (* Logical pre and postconditions can only access the restricted view of the heap *)
 
-type req_t (pre:pre_t) = rmem pre -> Type0
+type req_t (pre:pre_t) = rmem pre -> prop
 type ens_t (pre:pre_t) (a:Type) (post:post_t a) =
-  rmem pre -> (x:a) -> rmem (post x) -> Type0
+  rmem pre -> (x:a) -> rmem (post x) -> prop
 
 (* Empty assertion *)
 val emp : vprop
@@ -369,7 +369,7 @@ open FStar.Tactics.V2
 [@@ __steel_reduce__; strict_on_arguments [0]]
 let rec frame_equalities'
   (frame:vprop)
-  (h0:rmem frame) (h1:rmem frame) : Type0
+  (h0:rmem frame) (h1:rmem frame) : prop
   = begin match frame with
     | VUnit p -> h0 frame == h1 frame
     | VStar p1 p2 ->
@@ -391,18 +391,18 @@ let rec frame_equalities'
 /// The uncommon formulation with an extra [p] is needed to use in `rewrite_with_tactic`,
 /// where the goal is of the shape `frame_equalities frame h0 h1 == ?u`
 /// The rewriting happens below, in `frame_vc_norm`
-val lemma_frame_equalities (frame:vprop) (h0:rmem frame) (h1:rmem frame) (p:Type0)
+val lemma_frame_equalities (frame:vprop) (h0:rmem frame) (h1:rmem frame) (p:prop)
   : Lemma
     (requires (h0 frame == h1 frame) == p)
     (ensures frame_equalities' frame h0 h1 == p)
 
 /// A special case for frames about emp.
-val lemma_frame_emp (h0:rmem emp) (h1:rmem emp) (p:Type0)
+val lemma_frame_emp (h0:rmem emp) (h1:rmem emp) (p:prop)
   : Lemma (requires True == p)
           (ensures frame_equalities' emp h0 h1 == p)
 
 /// A variant of conjunction elimination, suitable to the equality goals during rewriting
-val elim_conjunction (p1 p1' p2 p2':Type0)
+val elim_conjunction (p1 p1' p2 p2':prop)
   : Lemma (requires p1 == p1' /\ p2 == p2')
           (ensures (p1 /\ p2) == (p1' /\ p2'))
 
@@ -751,7 +751,7 @@ type exp : Type =
 /// A map from atoms to the terms they represent.
 /// The second component of the term corresponds to a default element,
 /// ensuring we never raise an exception when trying to access an element in the map
-let amap (a:Type) = list (atom * a) * a
+let amap (a:Type) = list (atom & a) & a
 
 /// An empty atom map: The list map is empty
 let const (#a:Type) (xa:a) : amap a = ([], xa)
@@ -816,7 +816,7 @@ let rec trivial_cancel (t:atom) (l:list atom) =
 /// The last two lists are the removed parts of l1 and l2, with
 /// the additional invariant that they are equal
 let rec trivial_cancels (l1 l2:list atom) (am:amap term)
-  : Tac (list atom * list atom * list atom * list atom) =
+  : Tac (list atom & list atom & list atom & list atom) =
   match l1 with
   | [] -> [], l2, [], []
   | hd::tl ->
@@ -839,7 +839,7 @@ let rec print_atoms (l:list atom) (am:amap term) : Tac string =
 /// Does not try to unify with a uvar, this will be done at the very end.
 /// Tries to unify with slprops with a different head symbol, it might
 /// be an abbreviation
-let rec try_candidates (t:atom) (l:list atom) (am:amap term) : Tac (atom * int) =
+let rec try_candidates (t:atom) (l:list atom) (am:amap term) : Tac (atom & int) =
   match l with
   | [] -> t, 0
   | hd::tl ->
@@ -863,7 +863,7 @@ let rec remove_from_list (t:atom) (l:list atom) : Tac (list atom) =
 /// Assumes that only l2 contains terms with the head symbol unresolved.
 /// It returns all elements that were not resolved during this iteration *)
 let rec equivalent_lists_once (l1 l2 l1_del l2_del:list atom) (am:amap term)
-  : Tac (list atom * list atom * list atom * list atom) =
+  : Tac (list atom & list atom & list atom & list atom) =
   match l1 with
   | [] -> [], l2, l1_del, l2_del
   | hd::tl ->
@@ -884,7 +884,7 @@ let rec equivalent_lists_once (l1 l2 l1_del l2_del:list atom) (am:amap term)
 /// This is very close to equivalent_lists_once above, but helps making progress
 /// when l1 contains syntactically equal candidates
 let rec equivalent_lists_once_l2 (l1 l2 l1_del l2_del:list atom) (am:amap term)
-  : Tac (list atom * list atom * list atom * list atom) =
+  : Tac (list atom & list atom & list atom & list atom) =
   match l2 with
   | [] -> l1, [], l1_del, l2_del
   | hd::tl ->
@@ -931,7 +931,7 @@ let is_smt_binder (b:binder) : Tac bool =
 
 /// Creates a new term, where all arguments where SMT rewriting is enabled have been replaced
 /// by fresh, unconstrained unification variables
-let rec new_args_for_smt_attrs (env:env) (l:list argv) (ty:typ) : Tac (list argv * list term) =
+let rec new_args_for_smt_attrs (env:env) (l:list argv) (ty:typ) : Tac (list argv & list term) =
   let fresh_ghost_uvar ty =
     let e = cur_env () in
     ghost_uvar_env e ty
@@ -965,7 +965,7 @@ let rec new_args_for_smt_attrs (env:env) (l:list argv) (ty:typ) : Tac (list argv
   | _ -> fail "should not happen. Is an slprop partially applied?"
 
 /// Rewrites all terms in the context to enable SMT rewriting through the use of fresh, unconstrained unification variables
-let rewrite_term_for_smt (env:env) (am:amap term * list term) (a:atom) : Tac (amap term * list term)
+let rewrite_term_for_smt (env:env) (am:amap term & list term) (a:atom) : Tac (amap term & list term)
   = let am, prev_uvar_terms = am in
     let term = select a am in
     let hd, args = collect_app term in
@@ -982,7 +982,7 @@ let fail_atoms (#a:Type) (l1 l2:list atom) (am:amap term) : Tac a
 /// If unification succeeds and we have unicity of the solution, this tactic will succeed,
 /// and ultimately create an SMT guard that the two terms are actually equal
 let rec equivalent_lists_fallback (n:nat) (l1 l2 l1_del l2_del:list atom) (am:amap term)
-  : Tac (list atom * list atom * bool) =
+  : Tac (list atom & list atom & bool) =
   match l1 with
   | [] -> begin match l2 with
     | [] -> (l1_del, l2_del, false)
@@ -1013,7 +1013,7 @@ let rec equivalent_lists_fallback (n:nat) (l1 l2 l1_del l2_del:list atom) (am:am
       else equivalent_lists_fallback n' rem1 rem2 l1_del' l2_del' am
 
 /// Iterates over all terms in [l2] to prepare them for unification with SMT rewriting
-let replace_smt_uvars (l1 l2:list atom) (am:amap term) : Tac (amap term * list term)
+let replace_smt_uvars (l1 l2:list atom) (am:amap term) : Tac (amap term & list term)
   = let env = cur_env () in
     fold_left (rewrite_term_for_smt env) (am, []) l2
 
@@ -1024,7 +1024,7 @@ let replace_smt_uvars (l1 l2:list atom) (am:amap term) : Tac (amap term * list t
 /// that the two lists are unifiable at any point
 /// The boolean indicates if there is a leftover empty frame
 let rec equivalent_lists' (n:nat) (use_smt:bool) (l1 l2 l1_del l2_del:list atom) (am:amap term)
-  : Tac (list atom * list atom * bool * list term) =
+  : Tac (list atom & list atom & bool & list term) =
   match l1 with
   | [] -> begin match l2 with
     | [] -> (l1_del, l2_del, false, [])
@@ -1094,7 +1094,7 @@ let rec most_restricted_at_top (l1 l2:list atom) (am:amap term) : Tac (list atom
 /// If it succeeds, returns permutations of l1, l2, and a boolean indicating
 /// if l2 has a trailing empty frame to be unified
 let equivalent_lists (use_smt:bool) (l1 l2:list atom) (am:amap term)
-  : Tac (list atom * list atom * bool * list term)
+  : Tac (list atom & list atom & bool & list term)
 = let l1, l2, l1_del, l2_del = trivial_cancels l1 l2 am in
   let l1 = most_restricted_at_top l1 l2 am in
   let n = List.Tot.length l1 in
@@ -1610,7 +1610,7 @@ let rec where_aux (n:nat) (x:term) (xs:list term) :
   | x'::xs' -> if lax_term_eq x x' then Some n else where_aux (n+1) x xs'
 let where = where_aux 0
 
-let fatom (t:term) (ts:list term) (am:amap term) : Tac (exp * list term * amap term) =
+let fatom (t:term) (ts:list term) (am:amap term) : Tac (exp & list term & amap term) =
   match where t ts with
   | Some v -> (Atom v, ts, am)
   | None ->
@@ -1623,7 +1623,7 @@ let fatom (t:term) (ts:list term) (am:amap term) : Tac (exp * list term * amap t
 /// they correspond to the same atoms
 /// This expects that mult, unit, and t have already been normalized
 let rec reification_aux (ts:list term) (am:amap term)
-                        (mult unit t : term) : Tac (exp * list term * amap term) =
+                        (mult unit t : term) : Tac (exp & list term & amap term) =
   let hd, tl = collect_app_ref t in
   match inspect_unascribe hd, List.Tot.Base.list_unref tl with
   | Tv_FVar fv, [(t1, Q_Explicit) ; (t2, Q_Explicit)] ->
@@ -1639,14 +1639,14 @@ let rec reification_aux (ts:list term) (am:amap term)
 
 /// Performs the required normalization before calling the function above
 let reification (eq: term) (m: term) (ts:list term) (am:amap term) (t:term) :
-    Tac (exp * list term * amap term) =
+    Tac (exp & list term & amap term) =
   let mult = norm_term [iota; zeta; delta] (`CE.CM?.mult (`#m)) in
   let unit = norm_term [iota; zeta; delta] (`CE.CM?.unit (`#m)) in
   let t    = norm_term [iota; zeta] t in
   reification_aux ts am mult unit t
 
 /// Meta-F* internal: Transforms the atom map into a term
-let rec convert_map (m : list (atom * term)) : term =
+let rec convert_map (m : list (atom & term)) : term =
   match m with
   | [] -> `[]
   | (a, t)::ps ->
@@ -1694,12 +1694,12 @@ let normal_tac_steps = [primops; iota; zeta; delta_only [
 let normal_tac (#a:Type) (x:a) : a = FStar.Pervasives.norm normal_tac_steps x
 
 /// Helper lemma to establish relation between normalized and initial values
-let normal_elim (x:Type0) : Lemma
+let normal_elim (x:prop) : Lemma
   (requires x)
   (ensures normal_tac x)
   = ()
 
-exception Result of list atom * list atom * bool * list term
+exception Result of list atom & list atom & bool & list term
 
 /// F* equalities are typed, but the generated type sometimes is a unification variable.
 /// This helper ensures that such unification variables are not left unresolved, which would lead to an error
@@ -1742,18 +1742,18 @@ let close_equality_typ (t:term) : Tac unit =
 /// The following three lemmas are helpers to manipulate the goal in canon_l_r
 
 [@@ no_subtyping]
-let inst_bv (#a:Type) (#p:a -> Type0) (#q:Type0) (x:a) (_:squash (p x ==> q))
+let inst_bv (#a:Type) (#p:a -> prop) (#q:prop) (x:a) (_:squash (p x ==> q))
   : Lemma ((forall (x:a). p x) ==> q) = ()
 
-let modus_ponens (#p #q:Type0) (_:squash p)
+let modus_ponens (#p #q:prop) (_:squash p)
   : Lemma ((p ==> q) ==> q)
   = ()
 
-let cut (p q:Type0) : Lemma (requires p /\ (p ==> q)) (ensures q) = ()
+let cut (p q:prop) : Lemma (requires p /\ (p ==> q)) (ensures q) = ()
 
-let and_true (p: Type0) : Lemma (requires (p /\ (p ==> True))) (ensures p) = ()
+let and_true (p: prop) : Lemma (requires (p /\ (p ==> True))) (ensures p) = ()
 
-let solve_implies_true (p: Type0) : Lemma (p ==> True) = ()
+let solve_implies_true (p: prop) : Lemma (p ==> True) = ()
 
 // This exception is raised for failures that should not be considered
 // hard but should allow postponing the goal instead
@@ -1770,7 +1770,7 @@ let is_and (t:term) : bool =
 
 private
 let is_squash (t:term) : bool =
-  is_any_fvar t [`%squash; `%auto_squash]
+  is_any_fvar t [`%squash]
 
 private
 let is_star (t:term) : bool =
@@ -1804,22 +1804,17 @@ let rec unify_pr_with_true (pr: term) : Tac unit =
         // postpone the goal instead of failing hard, to allow for other goals to solve those uvars
         raise (Postpone "unify_pr_with_true: some uvars are still there")
 
-let elim_and_l_squash (#a #b: Type0) (#goal: Type0) (f: (a -> Tot (squash goal))) (h: (a /\ b)) : Tot (squash goal) =
-  let f' (x: squash a) : Tot (squash goal) =
-    FStar.Squash.bind_squash x f
-  in
-  let elim_impl (x: squash (a /\ b)) : Tot (squash a) = () in
-  f' (elim_impl (FStar.Squash.return_squash h))
+let elim_and_l_squash (#a #b: prop) (#goal: prop) (f: a -> Tot (squash goal)) (h: (a /\ b)) : Tot (squash goal) =
+  f ()
 
-let elim_and_r_squash (#a #b: Type0) (#goal: Type0) (f: (b -> Tot (squash goal))) (h: (a /\ b)) : Tot (squash goal) =
-  let f' (x: squash b) : Tot (squash goal) =
-    FStar.Squash.bind_squash x f
-  in
-  let elim_impl (x: squash (a /\ b)) : Tot (squash b) = () in
-  f' (elim_impl (FStar.Squash.return_squash h))
+let elim_and_r_squash (#a #b: prop) (#goal: prop) (f: b -> Tot (squash goal)) (h: (a /\ b)) : Tot (squash goal) =
+  f ()
 
-let _return_squash (#a: Type) () (x: a) : Tot (squash a) =
-  FStar.Squash.return_squash x
+let _return_squash (#a: prop) () (x: a) : Tot (squash a) =
+  ()
+
+let elim_squash (#inner #goal: prop) (f: inner -> Tot (squash goal)) (h: squash inner) : Tot (squash goal) =
+  f ()
 
 let rec set_abduction_variable_term (pr: term) : Tac term =
   let hd, tl = collect_app pr in
@@ -1848,9 +1843,19 @@ let rec set_abduction_variable_term (pr: term) : Tac term =
 let set_abduction_variable () : Tac unit =
   let g = cur_goal () in
   match inspect_unascribe g with
-  | Tv_Arrow b _ ->
+  | Tv_Arrow b _ -> (
     let pr = b.sort in
-    exact (set_abduction_variable_term pr)
+    // In the prop world, the precondition is wrapped in a `squash`.
+    // Peel it off, set the abduction variable on the underlying prop,
+    // and re-wrap with `elim_squash`.
+    let hd, tl = collect_app pr in
+    match unsquash_term pr with
+    | Some inner ->
+      let arg = set_abduction_variable_term inner in
+      exact (mk_app (`elim_squash) [arg, Q_Explicit])
+    | _ ->
+      exact (set_abduction_variable_term pr)
+  )
   | _ -> fail "Not an arrow goal"
 
 let canon_l_r (use_smt:bool)
@@ -2028,7 +2033,7 @@ let canon_l_r (use_smt:bool)
       //G3 is the lhs of the implication in the auxiliary goal
       //  that we have in our assumptions via b
 
-      apply (`FStar.Squash.return_squash);
+      // apply (`FStar.Squash.return_squash);
       exact (binding_to_term b)
     end);
 
@@ -3004,7 +3009,7 @@ let typ_contains_req_ens (t:term) : Tac bool =
   is_any_fvar name [`%req_t; `%ens_t; `%pure_wp; `%pure_pre; `%pure_post]
 
 /// Splits goals between separation logic goals (slgoals) and requires/ensures goals (loggoals)
-let rec filter_goals (l:list goal) : Tac (list goal * list goal) =
+let rec filter_goals (l:list goal) : Tac (list goal & list goal) =
   match l with
   | [] -> [], []
   | hd::tl ->
@@ -3121,15 +3126,9 @@ let init_resolve_tac' (dict: _) : Tac unit =
 [@@ resolve_implicits; framing_implicit; plugin]
 let init_resolve_tac () : Tac unit = init_resolve_tac' []
 
-(* AF: There probably is a simpler way to get from p to squash p in a tactic, so that we can use apply_lemma *)
-let squash_and p (x:squash (p /\ True)) : (p /\ True) =
-  let x : squash (p `Prims.pair` True) = FStar.Squash.join_squash x in
-  x
-
 /// Calling into the framing tactic to ensure that the vprop whose selector we are trying to access is in the context
 [@@plugin]
 let selector_tactic () : Tac unit =
-  apply (`squash_and);
   apply_lemma (`intro_can_be_split_frame);
   flip ();
   norm [delta_only [

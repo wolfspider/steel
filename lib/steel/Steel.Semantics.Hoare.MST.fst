@@ -20,7 +20,7 @@ module P = FStar.Preorder
 
 open FStar.Tactics
 
-open FStar.NMST
+open Steel.NMST
 
 
 (*
@@ -46,7 +46,7 @@ open FStar.NMST
 /// Disabling projectors because we don't use them and they increase the typechecking time
 
 #push-options "--fuel  0 --ifuel 2 --z3rlimit 20 --print_implicits --print_universes \
-   --using_facts_from 'Prims FStar.Pervasives FStar.Preorder FStar.MST FStar.NMST Steel.Semantics.Hoare.MST'"
+   --using_facts_from 'Prims FStar.Pervasives FStar.Preorder Steel.MST Steel.NMST Steel.Semantics.Hoare.MST'"
 
 (**** Begin state defn ****)
 
@@ -280,13 +280,13 @@ let l_post (#st:st) (#a:Type) (pre:st.hprop) (post:post_t st a) = fp_prop2 pre p
 (**** End expects, provides, requires,
       and ensures defns ****)
 
-open FStar.NMSTTotal
+open Steel.NMSTTotal
 let full_mem (st:st) = m:st.mem{st.full_mem_pred m}
 
-effect Mst (a:Type) (#st:st) (req:st.mem -> Type0) (ens:st.mem -> a -> st.mem -> Type0) =
+effect Mst (a:Type) (#st:st) (req:st.mem -> prop) (ens:st.mem -> a -> st.mem -> prop) =
   NMSTATE a (full_mem st) st.locks_preorder req ens
 
-effect MstTot (a:Type) (#st:st) (req:st.mem -> Type0) (ens:st.mem -> a -> st.mem -> Type0) =
+effect MstTot (a:Type) (#st:st) (req:st.mem -> prop) (ens:st.mem -> a -> st.mem -> prop) =
   NMSTATETOT a (full_mem st) st.locks_preorder req ens
 
 let get (#st:st) ()
@@ -587,7 +587,7 @@ let step_req
   (#lpost:l_post pre post)
   (frame:st.hprop)
   (f:m st a pre post lpre lpost)
-  : st.mem -> Type0
+  : st.mem -> prop
   = fun m0 ->
     st.interp (pre `st.star` frame `st.star` st.locks_invariant m0) m0 /\
     lpre (st.core m0)
@@ -627,7 +627,7 @@ let step_ens
   (#lpost:l_post pre post)
   (frame:st.hprop)    
   (f:m st a pre post lpre lpost)
-  : st.mem -> step_result st a -> st.mem -> Type0
+  : st.mem -> step_result st a -> st.mem -> prop
   = fun m0 r m1 ->
     let Step next_pre next_post next_lpre next_lpost _ = r in
     post_preserves_frame next_pre frame m0 m1 /\
@@ -1054,7 +1054,7 @@ let step_act
 
   Step (post x) post (fun h -> lpost h x h) lpost (Ret post x lpost)
 
-module M = FStar.MST
+module M = Steel.MST
 
 let step_bind_ret_aux
       (#st:st)
