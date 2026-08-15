@@ -1,5 +1,9 @@
 open Prims
 
+module FStar_Witnessed_Core = struct
+  type ('state, 'rel, 'p) witnessed = unit
+end
+
 type lock_state = Invariant of unit
 
 let (uu___is_Invariant : lock_state -> Prims.bool) = fun projectee -> true

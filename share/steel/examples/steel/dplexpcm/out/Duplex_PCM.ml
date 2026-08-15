@@ -87,7 +87,7 @@ type ('tag, 'p, 'uuuuu, 'uuuuu1) extended_to =
     unit,
     'uuuuu,
     'uuuuu1 )
-  FStar_ReflexiveTransitiveClosure.closure
+  FStar_ReflexiveTransitiveClosure._closure
 
 type 'p t =
   | V of 'p partial_trace_of
@@ -756,3 +756,10 @@ let (channel_recv : party -> Obj.t recv_next_dprot_t -> ch -> Obj.t) =
     let x = channel_recv' name p next1 chan in
     channel_as_ch p name chan (Steel_Channel_Protocol.step next1 x);
     Steel_Effect_Atomic.return () () x
+
+let trace_snapshot
+    (c : ch)
+  : (dprot, (Obj.t, Obj.t) Steel_Channel_Protocol.trace) Prims.dtuple2 =
+  let chan = FStar_Pervasives.dsnd c in
+  let trace_ref = (snd ()) chan in
+  Steel_HigherReference.read () () trace_ref

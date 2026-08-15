@@ -1055,8 +1055,981 @@ let run_mode3_sqlite () =
         (Prims.string_of_int max_i)
         avg_f imb_f)
   
+(* --------------------- MODE 3T: TLQ x PCM (Eio fibers + multi-domains + tracing) + SQlite3  ----------------------------- *)
 
+type ocaml_int = Stdlib.Int.t
 
+type trace_event = {
+  seq : ocaml_int;
+  direction : string;
+  value : Prims.int;
+}
+
+let events_of_trace
+    (tr : (Obj.t, Obj.t) Steel_Channel_Protocol.trace)
+  : trace_event list =
+  let rec walk
+      (seq : ocaml_int)
+      (acc : trace_event list)
+      (tr : (Obj.t, Obj.t) Steel_Channel_Protocol.trace)
+    : trace_event list =
+    match tr with
+    | Steel_Channel_Protocol.Waiting _ ->
+        Stdlib.List.rev acc
+
+    | Steel_Channel_Protocol.Message (q, x, _q', tail) ->
+        let direction =
+          if Duplex_PCM.is_send q then
+            "A->B"
+          else if Duplex_PCM.is_recv q then
+            "B->A"
+          else
+            "?"
+        in
+
+        let value : Prims.int =
+          Obj.magic x
+        in
+
+        let ev = {
+          seq;
+          direction;
+          value;
+        } in
+
+        walk
+          Stdlib.(seq + 1)
+          (ev :: acc)
+          tail
+  in
+
+  walk 1 [] tr
+
+module Trace_monitor = struct
+
+  type command =
+    | Nop
+    | Watch of ocaml_int * Duplex_PCM.ch
+    | Stop
+
+  type watched = {
+    id : ocaml_int;
+    chan : Duplex_PCM.ch;
+    mutable seen : ocaml_int;
+  }
+
+  type pending_event = {
+    channel_id : ocaml_int;
+    ev : trace_event;
+  }
+
+  type t = {
+    commands : command TLQ.t;
+    next_id : ocaml_int Atomic.t;
+    domain : unit Domain.t;
+  }
+
+  (* ------------------------------------------------------------ *)
+  (* Start trace-monitor domain                                   *)
+  (* ------------------------------------------------------------ *)
+
+  let start db_path =
+
+    (* Control messages use your existing TwoLockQueue. *)
+    let commands =
+      TLQ.new_queue Nop
+    in
+
+    (* Drop TwoLockQueue's dummy first item. *)
+    ignore (TLQ.dequeue commands);
+
+    (* Native OCaml integer. Do not use Prims.of_int here. *)
+    let next_id : ocaml_int Atomic.t =
+      Atomic.make 0
+    in
+
+    let domain =
+      Domain.spawn
+        (fun () ->
+
+          (* ---------------------------------------------------- *)
+          (* SQLite belongs exclusively to this monitor domain.   *)
+          (* ---------------------------------------------------- *)
+
+          let db =
+            Sqlite3.db_open db_path
+          in
+
+          ignore
+            (Sqlite3.busy_timeout db 5000);
+
+          ignore
+            (Sqlite3.exec db
+               "PRAGMA journal_mode=WAL;");
+
+          ignore
+            (Sqlite3.exec db
+               "PRAGMA synchronous=NORMAL;");
+
+          ignore
+            (Sqlite3.exec db
+               "PRAGMA temp_store=MEMORY;");
+
+          (* ---------------------------------------------------- *)
+          (* Schema                                               *)
+          (* ---------------------------------------------------- *)
+
+          ignore
+            (Sqlite3.exec db
+               "CREATE TABLE IF NOT EXISTS pcm_trace (\
+                channel_id INTEGER NOT NULL,\
+                seq        INTEGER NOT NULL,\
+                direction  TEXT    NOT NULL,\
+                value      INTEGER NOT NULL,\
+                PRIMARY KEY(channel_id, seq)\
+                );");
+
+          (* Start each test with an empty trace table. *)
+          ignore
+            (Sqlite3.exec db
+               "DELETE FROM pcm_trace;");
+
+          (* One large transaction for this experiment. *)
+          ignore
+            (Sqlite3.exec db "BEGIN;");
+
+                    (* ---------------------------------------------------- *)
+          (* Batched SQLite writer                                *)
+          (* ---------------------------------------------------- *)
+
+          let batch_size : ocaml_int =
+            128
+          in
+
+          let batch : pending_event option array =
+            Array.make batch_size None
+          in
+
+          let batch_len : ocaml_int ref =
+            ref 0
+          in
+
+          let make_values (n : ocaml_int) : string =
+            Stdlib.String.concat
+              ","
+              (Stdlib.List.init
+                 n
+                 (fun _ -> "(?, ?, ?, ?)"))
+          in
+
+          (* Prepare one statement representing exactly one
+             complete batch. This gets reused for the entire run. *)
+          let batch_stmt =
+            let sql =
+              "INSERT OR IGNORE INTO pcm_trace \
+               (channel_id, seq, direction, value) VALUES "
+              ^ make_values batch_size
+            in
+            Sqlite3.prepare db sql
+          in
+
+          let bind_event
+              stmt
+              (slot : ocaml_int)
+              (p : pending_event)
+            : unit =
+
+            let base : ocaml_int =
+              Stdlib.(slot * 4)
+            in
+
+            ignore
+              (Sqlite3.bind
+                 stmt
+                 Stdlib.(base + 1)
+                 (Sqlite3.Data.INT
+                    (Stdlib.Int64.of_int p.channel_id)));
+
+            ignore
+              (Sqlite3.bind
+                 stmt
+                 Stdlib.(base + 2)
+                 (Sqlite3.Data.INT
+                    (Stdlib.Int64.of_int p.ev.seq)));
+
+            ignore
+              (Sqlite3.bind
+                 stmt
+                 Stdlib.(base + 3)
+                 (Sqlite3.Data.TEXT p.ev.direction));
+
+            ignore
+              (Sqlite3.bind
+                 stmt
+                 Stdlib.(base + 4)
+                 (Sqlite3.Data.INT
+                    (Z.to_int64 p.ev.value)))
+          in
+
+          let step_statement stmt =
+            match Sqlite3.step stmt with
+            | Sqlite3.Rc.DONE ->
+                ()
+
+            | rc ->
+                failwith
+                  ("sqlite trace batch insert failed: "
+                   ^ Sqlite3.Rc.to_string rc)
+          in
+
+          (* Full batches reuse batch_stmt, so there is no
+             prepare/finalize operation on the hot path. *)
+          let flush_full_batch () : unit =
+            ignore
+              (Sqlite3.reset batch_stmt);
+
+            ignore
+              (Sqlite3.clear_bindings batch_stmt);
+
+            for slot = 0 to Stdlib.pred batch_size do
+              match batch.(slot) with
+              | Some p ->
+                  bind_event batch_stmt slot p
+
+              | None ->
+                  failwith
+                    "trace batch unexpectedly incomplete"
+            done;
+
+            step_statement batch_stmt;
+
+            batch_len := 0
+          in
+
+          (* At shutdown we may have fewer than [batch_size]
+             entries. Prepare one correctly-sized statement for
+             that final partial batch. *)
+          let flush_partial_batch () : unit =
+            let n : ocaml_int =
+              !batch_len
+            in
+
+            if Stdlib.(n > 0) then begin
+              let sql =
+                "INSERT OR IGNORE INTO pcm_trace \
+                 (channel_id, seq, direction, value) VALUES "
+                ^ make_values n
+              in
+
+              let stmt =
+                Sqlite3.prepare db sql
+              in
+
+              for slot = 0 to Stdlib.pred n do
+                match batch.(slot) with
+                | Some p ->
+                    bind_event stmt slot p
+
+                | None ->
+                    failwith
+                      "trace partial batch unexpectedly incomplete"
+              done;
+
+              step_statement stmt;
+
+              ignore
+                (Sqlite3.finalize stmt);
+
+              batch_len := 0
+            end
+          in
+
+          (* This replaces the old immediate SQLite insert. *)
+          let insert
+              (channel_id : ocaml_int)
+              (ev : trace_event)
+            : unit =
+
+            let slot : ocaml_int =
+              !batch_len
+            in
+
+            batch.(slot) <-
+              Some {
+                channel_id;
+                ev;
+              };
+
+            batch_len :=
+              Stdlib.(slot + 1);
+
+            if Stdlib.(!batch_len = batch_size) then
+              flush_full_batch ()
+          in
+
+          (* ---------------------------------------------------- *)
+          (* Channels currently being watched                    *)
+          (* ---------------------------------------------------- *)
+
+          let active : watched list ref =
+            ref []
+          in
+
+          let stopping =
+            ref false
+          in
+
+          (* ---------------------------------------------------- *)
+          (* Pull control messages from TwoLockQueue              *)
+          (* ---------------------------------------------------- *)
+
+          let rec drain_commands () =
+            match TLQ.dequeue commands with
+
+            | None ->
+                ()
+
+            | Some Nop ->
+                drain_commands ()
+
+            | Some (Watch (id, chan)) ->
+
+                active :=
+                  {
+                    id;
+                    chan;
+                    seen = 0;
+                  }
+                  :: !active;
+
+                drain_commands ()
+
+            | Some Stop ->
+
+                stopping := true;
+
+                drain_commands ()
+          in
+
+          (* ---------------------------------------------------- *)
+          (* Inspect one live Steel trace                         *)
+          (*                                                      *)
+          (* Returns true once its protocol reaches Return.       *)
+          (* ---------------------------------------------------- *)
+
+          let scan
+              (w : watched)
+            : bool =
+
+            let Prims.Mkdtuple2 (next, tr) =
+              Duplex_PCM.trace_snapshot w.chan
+            in
+
+            (* Convert Steel's actual trace to sequential events. *)
+            let events =
+              events_of_trace tr
+            in
+
+            (* Insert only events we haven't already materialized. *)
+            Stdlib.List.iter
+              (fun (ev : trace_event) ->
+
+                if Stdlib.(ev.seq > w.seen) then
+                  insert w.id ev)
+
+              events;
+
+            (* Because seq starts at 1, length is also the highest
+               message number observed so far. *)
+            w.seen <-
+              Stdlib.List.length events;
+
+            (* Return true when this endpoint has finished. *)
+            Duplex_PCM.is_fin next
+          in
+
+          (* ---------------------------------------------------- *)
+          (* Scan every currently-live channel                   *)
+          (* ---------------------------------------------------- *)
+
+          let scan_active () =
+
+            active :=
+              Stdlib.List.filter
+                (fun (w : watched) ->
+
+                  try
+                    (* Keep channel while it has not finished. *)
+                    not (scan w)
+
+                  with exn ->
+
+                    Printf.eprintf
+                      "[trace-monitor] channel %d: %s\n%!"
+                      w.id
+                      (Printexc.to_string exn);
+
+                    (* Keep it so a transient read failure doesn't
+                       permanently discard its trace. *)
+                    true)
+
+                !active
+          in
+
+          (* ---------------------------------------------------- *)
+          (* Monitor loop                                         *)
+          (* ---------------------------------------------------- *)
+
+          let rec loop () =
+
+            (* Discover newly-created channels. *)
+            drain_commands ();
+
+            (* Observe their current cumulative traces. *)
+            scan_active ();
+
+            if !stopping then begin
+              (* Final trace scan. *)
+              scan_active ();
+
+              (* Flush anything left that did not fill a complete batch. *)
+              flush_partial_batch ();
+
+              ignore
+                (Sqlite3.exec db "COMMIT;");
+
+              (* This is the persistent prepared statement used for full batches. *)
+              ignore
+                (Sqlite3.finalize batch_stmt);
+
+              ignore
+                (Sqlite3.db_close db)
+          end
+          else begin
+            Unix.sleepf 0.001;
+            loop ()
+          end
+          in
+
+          loop ())
+    in
+
+    {
+      commands;
+      next_id;
+      domain;
+    }
+
+  (* ------------------------------------------------------------ *)
+  (* Register a channel                                           *)
+  (* ------------------------------------------------------------ *)
+
+  let watch
+      (t : t)
+      (chan : Duplex_PCM.ch)
+    : ocaml_int =
+
+    let id : ocaml_int =
+      Atomic.fetch_and_add
+        t.next_id
+        1
+    in
+
+    TLQ.enqueue
+      t.commands
+      (Watch (id, chan));
+
+    id
+
+  (* ------------------------------------------------------------ *)
+  (* Stop monitor and wait for SQLite to be committed             *)
+  (* ------------------------------------------------------------ *)
+
+  let stop
+      (t : t)
+    : unit =
+
+    TLQ.enqueue
+      t.commands
+      Stop;
+
+    Domain.join
+      t.domain
+end
+
+let run_mode3_sqlite_trace () =
+  Eio_main.run (fun env ->
+      Eio.traceln "Eio backend = %s" (Eio.Stdenv.backend_id env);
+
+      (* ------------------------------------------------------------ *)
+      (* Trace monitor                                                *)
+      (* ------------------------------------------------------------ *)
+
+      let db_path =
+        try Sys.getenv "SQLITE_PATH"
+        with _ -> "pcm_mode3_trace.sqlite"
+      in
+
+      let trace_monitor =
+        Trace_monitor.start db_path
+      in
+
+      let clock = env#clock in
+
+      (* ------------------------------------------------------------ *)
+      (* Configuration                                                *)
+      (* ------------------------------------------------------------ *)
+
+      let n_producers =
+        try int_of_string (Sys.getenv "PRODUCERS")
+        with _ -> 4
+      in
+
+      let n_consumers =
+        try int_of_string (Sys.getenv "CONSUMERS")
+        with _ -> 4
+      in
+
+      let iters =
+        try int_of_string (Sys.getenv "ITERS")
+        with _ -> 1_000_000
+      in
+
+      let n_domains =
+        try int_of_string (Sys.getenv "DOMAINS")
+        with _ ->
+          max 1 (Domain.recommended_domain_count ())
+      in
+
+      Printf.printf
+        "[3T] domains=%d producers=%d consumers=%d iters/producer=%d\n%!"
+        n_domains
+        n_producers
+        n_consumers
+        iters;
+
+      (* ------------------------------------------------------------ *)
+      (* Work queue                                                   *)
+      (* ------------------------------------------------------------ *)
+
+      let q =
+        Q.new_queue (fun () -> ())
+      in
+
+      (* Drop dummy queue element. *)
+      ignore (Q.dequeue q);
+
+      let stop =
+        Atomic.make false
+      in
+
+      let get_stop () =
+        Atomic.get stop
+      in
+
+      let set_stop v =
+        Atomic.set stop v
+      in
+
+      (* ------------------------------------------------------------ *)
+      (* Per-consumer statistics                                      *)
+      (* ------------------------------------------------------------ *)
+
+      let counts : Prims.nat array =
+        Array.make n_consumers (Prims.of_int 0)
+      in
+
+      let incr_nat (a : Prims.nat array) i =
+        let v =
+          int_of_nat a.(i) + Prims.of_int 1
+        in
+        a.(i) <- nat_of_int v
+      in
+
+      (* ------------------------------------------------------------ *)
+      (* B endpoint                                                   *)
+      (* ------------------------------------------------------------ *)
+
+      let serve_b (cB : Duplex_PCM.ch) : unit =
+        let x =
+          Duplex_PCM.channel_recv
+            Duplex_PCM.B
+            (Steel_Channel_Protocol.dual duat)
+            cB
+        in
+
+        let xi : Prims.int =
+          (Obj.magic x : Prims.int)
+        in
+
+        let yi : Prims.int =
+          Prims.op_Addition
+            xi
+            (Prims.of_int 42)
+        in
+
+        let stepB =
+          Steel_Channel_Protocol.step
+            (Steel_Channel_Protocol.dual duat)
+            x
+        in
+
+        Duplex_PCM.channel_send
+          Duplex_PCM.B
+          stepB
+          cB
+          (Obj.magic yi)
+      in
+
+      let t0 =
+        Unix.gettimeofday ()
+      in
+
+      (* ------------------------------------------------------------ *)
+      (* Eio work                                                     *)
+      (* ------------------------------------------------------------ *)
+
+      Switch.run (fun sw ->
+
+        let reqs : req Eio.Stream.t =
+          Eio.Stream.create
+            (max 1 n_consumers)
+        in
+
+        (* ---------------------------------------------------------- *)
+        (* PCM server                                                 *)
+        (* ---------------------------------------------------------- *)
+
+        Eio.Fiber.fork ~sw (fun () ->
+            let rec serve_loop () =
+              match Eio.Stream.take reqs with
+
+              | Request { x; reply } ->
+
+                  (* Create a fresh Steel PCM channel. *)
+                  let cA, cB =
+                    Duplex_PCM.new_channel duat
+                  in
+
+                  (* Register A's endpoint with the independent
+                     trace-monitor domain before advancing it. *)
+                  let _channel_id =
+                    Trace_monitor.watch
+                      trace_monitor
+                      cA
+                  in
+
+                  let x_any : Obj.t =
+                    (Obj.magic x : Obj.t)
+                  in
+
+                  (* A -> B *)
+                  Duplex_PCM.channel_send
+                    Duplex_PCM.A
+                    duat
+                    cA
+                    x_any;
+
+                  let stepA =
+                    Steel_Channel_Protocol.step
+                      duat
+                      x_any
+                  in
+
+                  (* B receives x and sends x + 42. *)
+                  serve_b cB;
+
+                  (* B -> A *)
+                  let y_any =
+                    Duplex_PCM.channel_recv
+                      Duplex_PCM.A
+                      stepA
+                      cA
+                  in
+
+                  Eio.Stream.add
+                    reply
+                    (Obj.magic y_any : Prims.int);
+
+                  serve_loop ()
+
+              | Stop ->
+                  ()
+            in
+
+            serve_loop ());
+
+        (* ---------------------------------------------------------- *)
+        (* Queue consumers                                            *)
+        (* ---------------------------------------------------------- *)
+
+        let cids =
+          Stdlib.List.init
+            n_consumers
+            (fun i -> i)
+        in
+
+        Stdlib.List.iter
+          (fun cid ->
+            Eio.Fiber.fork ~sw (fun () ->
+                let rec loop () =
+                  match Q.dequeue q with
+
+                  | Some f ->
+                      f ();
+
+                      incr_nat counts cid;
+
+                      Eio.Fiber.yield ();
+
+                      loop ()
+
+                  | None ->
+                      if get_stop () then
+                        ()
+                      else begin
+                        Eio.Fiber.yield ();
+                        loop ()
+                      end
+                in
+
+                loop ()))
+          cids;
+
+        (* ---------------------------------------------------------- *)
+        (* Producers                                                  *)
+        (* ---------------------------------------------------------- *)
+
+        let prod_ps =
+          Stdlib.List.init n_domains
+            (fun dom_i ->
+              Eio.Fiber.fork_promise ~sw (fun () ->
+                  Eio.Domain_manager.run
+                    env#domain_mgr
+                    (fun () ->
+
+                      let start : Prims.int =
+                        Prims.of_int dom_i
+                        * Prims.of_int n_producers
+                        / Prims.of_int n_domains
+                      in
+
+                      let stop_excl : Prims.int =
+                        (Prims.of_int dom_i + Prims.of_int 1)
+                        * Prims.of_int n_producers
+                        / Prims.of_int n_domains
+                      in
+
+                      let count_p : Prims.int =
+                        Prims.op_Subtraction
+                          stop_excl
+                          start
+                      in
+
+                      let rec build_span
+                          acc
+                          (k : Prims.int) =
+                        if
+                          Prims.op_GreaterThanOrEqual
+                            k
+                            count_p
+                        then
+                          Stdlib.List.rev acc
+                        else
+                          let elt =
+                            Prims.op_Addition
+                              start
+                              k
+                          in
+
+                          build_span
+                            (elt :: acc)
+                            (Prims.op_Addition
+                               k
+                               (Prims.of_int 1))
+                      in
+
+                      let span : Prims.int list =
+                        build_span
+                          []
+                          (Prims.of_int 0)
+                      in
+
+                      Stdlib.List.iter
+                        (fun (_p : Prims.int) ->
+
+                          let reply :
+                              Prims.int Eio.Stream.t =
+                            Eio.Stream.create 1
+                          in
+
+                          for i = 1 to iters do
+                            let x =
+                              Prims.of_int 1
+                            in
+
+                            Q.enqueue q
+                              (fun () ->
+                                Eio.Stream.add
+                                  reqs
+                                  (Request { x; reply }));
+
+                            let _y =
+                              Eio.Stream.take reply
+                            in
+
+                            if i land 0x3FF = 0 then
+                              Eio.Fiber.yield ()
+                          done)
+                        span)))
+        in
+
+        (* ---------------------------------------------------------- *)
+        (* Wait for producers                                         *)
+        (* ---------------------------------------------------------- *)
+
+        Stdlib.List.iter
+          (fun p ->
+            ignore
+              (Eio.Promise.await_exn p))
+          prod_ps;
+
+        (* ---------------------------------------------------------- *)
+        (* Shut down Eio side                                         *)
+        (* ---------------------------------------------------------- *)
+
+        (* Put Stop through the same queue after all producer work. *)
+        Q.enqueue q
+          (fun () ->
+            Eio.Stream.add reqs Stop);
+
+        set_stop true;
+
+        Eio.Fiber.yield ();
+
+        Eio.Time.sleep
+          clock
+          0.05;
+
+        ()
+      );
+
+      (* ------------------------------------------------------------ *)
+      (* Switch.run has completed.                                    *)
+      (* Stop trace domain, perform final scan and commit SQLite.      *)
+      (* ------------------------------------------------------------ *)
+
+      Trace_monitor.stop trace_monitor;
+
+      let t1 =
+        Unix.gettimeofday ()
+      in
+
+      (* ------------------------------------------------------------ *)
+      (* Statistics                                                   *)
+      (* ------------------------------------------------------------ *)
+
+      let total_i : Prims.int =
+        Array.fold_left
+          (fun acc k_nat ->
+            Prims.op_Addition
+              acc
+              (Obj.magic k_nat : Prims.int))
+          (Prims.of_int 0)
+          counts
+      in
+
+      let min_i, max_i =
+        let first : Prims.int =
+          (Obj.magic counts.(0) : Prims.int)
+        in
+
+        Array.fold_left
+          (fun (mn, mx) k_nat ->
+            let ki : Prims.int =
+              (Obj.magic k_nat : Prims.int)
+            in
+
+            let mn' =
+              if Prims.op_LessThan ki mn
+              then ki
+              else mn
+            in
+
+            let mx' =
+              if Prims.op_GreaterThan ki mx
+              then ki
+              else mx
+            in
+
+            (mn', mx'))
+          (first, first)
+          counts
+      in
+
+      let secs =
+        t1 -. t0
+      in
+
+      let avg_f =
+        f_of_int total_i
+        /. float_of_int n_consumers
+      in
+
+      let imb_f =
+        if
+          Prims.op_Equality
+            max_i
+            (Prims.of_int 0)
+        then
+          0.0
+        else
+          f_of_int
+            (Prims.op_Subtraction
+               max_i
+               min_i)
+          /. f_of_int max_i
+          *. 100.0
+      in
+
+      let rate_f =
+        f_of_int total_i /. secs
+      in
+
+      Printf.printf
+        "=== PCM trace x TwoLockQueue (Eio + SQLite monitor) ===\n";
+
+      Printf.printf
+        "producers=%d  consumers=%d  iters/producer=%d\n"
+        n_producers
+        n_consumers
+        iters;
+
+      Array.iteri
+        (fun i k_nat ->
+          Printf.printf
+            "T%-2d: %s\n"
+            i
+            (Prims.string_of_int
+               (Obj.magic k_nat : Prims.int)))
+        counts;
+
+      Printf.printf
+        "total=%s  time=%.3fs  throughput=%.0f ops/s\n%!"
+        (Prims.string_of_int total_i)
+        secs
+        rate_f;
+
+      Printf.printf
+        "min=%s  max=%s  avg=%.1f  imbalance=%.1f%%%%\n%!"
+        (Prims.string_of_int min_i)
+        (Prims.string_of_int max_i)
+        avg_f
+        imb_f;
+
+      Printf.printf
+        "Steel PCM trace written to %s\n%!"
+        db_path)
 (* ---------------------- Entry: choose mode ---------------------- *)
 let () =
   let mode = try Sys.getenv "MODE" with _ -> "3" in
@@ -1068,4 +2041,5 @@ let () =
   | "3S" -> run_mode3_stress ()
   | "3E" -> run_mode3_eio ()
   | "3Q" -> run_mode3_sqlite ()
+  | "3T" -> run_mode3_sqlite_trace ()
   | "3" | _ -> run_mode3 ()

@@ -237,7 +237,7 @@ type ('p, 'uuuuu, 'uuuuu1) extended_to =
     unit,
     'uuuuu,
     'uuuuu1 )
-  FStar_ReflexiveTransitiveClosure.closure
+  FStar_ReflexiveTransitiveClosure._closure
 
 let (extend_partial_trace :
       unit protocol -> Obj.t partial_trace_of -> Obj.t -> Obj.t partial_trace_of)
