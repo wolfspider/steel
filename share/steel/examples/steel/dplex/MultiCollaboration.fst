@@ -73,13 +73,19 @@ let suffix_from (#a:Type0) (baseVersion:nat) (xs:list a) : Tot (list a) =
 // --------------------------
 
 let rec choose_candidate (m:model) (cs:list D.action)
-  : D.result (model * D.action) D.err
-  = match cs with
-    | [] -> D.Err (D.reject_err ())
-    | hd::tl ->
-        match D.try_step m hd with
-        | D.Ok m2  -> D.Ok (m2, hd)
-        | D.Err _  -> choose_candidate m tl
+  : D.result (model & D.action) D.err
+  =
+  match cs with
+  | [] ->
+      D.Err (D.reject_err ())
+
+  | hd::tl ->
+      match D.try_step m hd with
+      | D.Ok m2 ->
+          D.Ok (m2, hd)
+
+      | D.Err _ ->
+          choose_candidate m tl
 
 // --------------------------
 // Dispatch (executable)
@@ -88,7 +94,7 @@ let rec choose_candidate (m:model) (cs:list D.action)
 let dispatch (s:server_state)
              (baseVersion:nat{baseVersion <= version s})
              (orig:D.action)
-  : server_state * reply
+  : server_state & reply
   =
   let suffix  = suffix_from baseVersion s.appliedLog in
   let rebased = D.rebase_through_suffix suffix orig in
@@ -105,7 +111,9 @@ let dispatch (s:server_state)
           chosen = chosen;
           outcome = AuditAccepted chosen noChange } in
       let newAudit = s.auditLog @ [rec0] in
-      ({ present = m2; appliedLog = newApplied; auditLog = newAudit },
+      ({ present = m2;
+         appliedLog = newApplied;
+         auditLog = newAudit },
        Accepted (length newApplied) m2 chosen noChange)
 
   | D.Err _ ->
@@ -116,7 +124,9 @@ let dispatch (s:server_state)
           chosen = rebased;
           outcome = AuditRejected DomainInvalid rebased } in
       let newAudit = s.auditLog @ [rec0] in
-      ({ present = s.present; appliedLog = s.appliedLog; auditLog = newAudit },
+      ({ present = s.present;
+         appliedLog = s.appliedLog;
+         auditLog = newAudit },
        Rejected DomainInvalid rebased)
 
 // --------------------------

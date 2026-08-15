@@ -40,7 +40,6 @@ let rec is_bst : 'a . 'a cmp -> 'a tree -> Prims.bool =
            (forall_keys left (key_left compare data)))
           && (forall_keys right (key_right compare data))
 type ('a, 'cmp1) bst = 'a tree
-type ('a, 'r, 'x) mem = Obj.t
 let rec bst_search :
   'a . 'a cmp -> ('a, Obj.t) bst -> 'a -> 'a FStar_Pervasives_Native.option =
   fun cmp1 x key ->
@@ -94,7 +93,6 @@ let rec is_balanced : 'a . 'a tree -> Prims.bool =
             Prims.int_one)
            && (is_balanced right))
           && (is_balanced left)
-type ('a, 'cmp1, 'x) is_avl = unit
 type ('a, 'cmp1) avl = 'a tree
 let rotate_left (r : 'a tree) : 'a tree FStar_Pervasives_Native.option=
   match r with
@@ -127,33 +125,33 @@ let rebalance_avl (x : 'a tree) : 'a tree=
       else
         if ((height left) - (height right)) > Prims.int_one
         then
-          (let uu___1 = left in
-           match uu___1 with
+          (let uu___ = left in
+           match uu___ with
            | Node (ldata, lleft, lright) ->
                if (height lright) > (height lleft)
                then
                  (match rotate_left_right x with
                   | FStar_Pervasives_Native.Some y -> y
-                  | uu___2 -> x)
+                  | uu___1 -> x)
                else
                  (match rotate_right x with
                   | FStar_Pervasives_Native.Some y -> y
-                  | uu___3 -> x))
+                  | uu___1 -> x))
         else
           if ((height left) - (height right)) < (Prims.of_int (-1))
           then
-            (let uu___2 = right in
-             match uu___2 with
+            (let uu___ = right in
+             match uu___ with
              | Node (rdata, rleft, rright) ->
                  if (height rleft) > (height rright)
                  then
                    (match rotate_right_left x with
                     | FStar_Pervasives_Native.Some y -> y
-                    | uu___3 -> x)
+                    | uu___1 -> x)
                  else
                    (match rotate_left x with
                     | FStar_Pervasives_Native.Some y -> y
-                    | uu___4 -> x))
+                    | uu___1 -> x))
           else x
 let rec insert_avl : 'a . 'a cmp -> 'a tree -> 'a -> 'a tree =
   fun cmp1 x key ->

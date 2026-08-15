@@ -821,10 +821,10 @@ let run_mode3_sqlite () =
 
       (* Plain OCaml ints from env; rename to avoid clashes *)
       let n_producers =
-        try int_of_string (Sys.getenv "PRODUCERS") with _ -> 4
+        try int_of_string (Sys.getenv "PRODUCERS") with _ -> 8
       in
       let n_consumers =
-        try int_of_string (Sys.getenv "CONSUMERS") with _ -> 4
+        try int_of_string (Sys.getenv "CONSUMERS") with _ -> 8
       in
       let iters =
         try int_of_string (Sys.getenv "ITERS") with _ -> 1_000_000
@@ -1582,12 +1582,12 @@ let run_mode3_sqlite_trace () =
 
       let n_producers =
         try int_of_string (Sys.getenv "PRODUCERS")
-        with _ -> 4
+        with _ -> 8
       in
 
       let n_consumers =
         try int_of_string (Sys.getenv "CONSUMERS")
-        with _ -> 4
+        with _ -> 8
       in
 
       let iters =

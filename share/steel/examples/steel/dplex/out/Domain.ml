@@ -14,7 +14,6 @@ let uu___is_Err (projectee : ('t, 'e) result) : Prims.bool=
 let __proj__Err__item__error (projectee : ('t, 'e) result) : 'e=
   match projectee with | Err error -> error
 
-type 'uuuuu inv = unit
 let init (uu___ : unit) : model= Model.init ()
 let try_step (m : model) (a : action) : (model, unit) result=
   match a with
@@ -27,7 +26,6 @@ let rebase_through_suffix (suffix : action Prims.list) (a : action) :
   FStar_List_Tot_Base.fold_left (fun acc remote -> rebase remote acc) a
     (FStar_List_Tot_Base.rev suffix)
 let candidates (_m : model) (orig : action) : action Prims.list= [orig]
-type ('uuuuu, 'uuuuu1) explains = unit
 type model_ref =
   (Model.field_key, Model.field_value) Trees.node_data Selectors_Tree_Core.t
 let model_eqb (ptr1 : model_ref) (ptr2 : model_ref) : Prims.bool=

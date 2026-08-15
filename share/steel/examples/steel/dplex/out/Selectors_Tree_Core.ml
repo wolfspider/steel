@@ -34,7 +34,6 @@ let intro_linked_tree_leaf (uu___ : unit) : unit= ()
 let elim_linked_tree_leaf (ptr : 'a t) : unit= ()
 let node_is_not_null (ptr : 'a t) : unit= ()
 let pack_tree (ptr : 'a t) (left : 'a t) (right : 'a t) : unit= ()
-type ('a, 't1) is_node = Obj.t
 let reveal_non_empty_tree (ptr : 'a t) : unit= ()
 let unpack_tree_node (ptr : 'a t) : 'a node=
   reveal_non_empty_tree ptr;

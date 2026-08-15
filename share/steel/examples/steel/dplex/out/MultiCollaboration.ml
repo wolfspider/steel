@@ -103,7 +103,7 @@ let rec drop_nat : 'a . Prims.nat -> 'a Prims.list -> 'a Prims.list =
   fun n xs ->
     if n = Prims.int_zero
     then xs
-    else (match xs with | [] -> [] | uu___1::tl -> drop_nat (pred_nat n) tl)
+    else (match xs with | [] -> [] | uu___::tl -> drop_nat (pred_nat n) tl)
 let suffix_from (baseVersion : Prims.nat) (xs : 'a Prims.list) :
   'a Prims.list= drop_nat baseVersion xs
 let rec choose_candidate (m : model) (cs : Domain.action Prims.list) :

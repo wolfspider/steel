@@ -4,8 +4,6 @@ type leader = MultiCollaboration.server_state
 type follower = MultiCollaboration.server_state
 let leader_version (l : leader) : Prims.nat= MultiCollaboration.version l
 let follower_version (f : follower) : Prims.nat= MultiCollaboration.version f
-type ('a, 'xs, 'ys) is_prefix = unit
-type ('l, 'f) follower_is_prefix = unit
 type commit = {
   idx: Prims.nat ;
   act: Domain.action }

@@ -91,7 +91,7 @@ let first_pending_action (es:effect_state) : option D.action =
 
 
 
-let step (es:effect_state) (ev:event) : effect_state * command =
+let step (es:effect_state) (ev:event) : effect_state & command =
   match ev with
   | UserAction action ->
       let newClient = MC.client_local_dispatch es.client action in

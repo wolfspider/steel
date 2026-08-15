@@ -12,7 +12,7 @@ open Steel.Effect
 let model_ref = TC.t (T.node_data M.field_key M.field_value)
 
 // Pure equality lifted to Steel via selector
-val model_eqb
+assume val model_eqb
   (ptr1 ptr2: model_ref)
   : Steel bool
     (TC.linked_tree ptr1 `star` TC.linked_tree ptr2)

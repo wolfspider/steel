@@ -35,7 +35,7 @@ let __proj__Mkeffect_state__item__serverVersion (projectee : effect_state) :
   Prims.nat=
   match projectee with
   | { network; mode; client; serverVersion;_} -> serverVersion
-let max_retries : Prims.nat= (Prims.of_int (5))
+let max_retries : Prims.nat= Prims.of_int 5
 type event =
   | UserAction of Domain.action 
   | DispatchAccepted of Prims.nat * model 
@@ -222,7 +222,7 @@ let step (es : effect_state) (ev : event) : (effect_state * command)=
                        client = (es1.client);
                        serverVersion = (es1.serverVersion)
                      }, NoOp)
-                | uu___1 ->
+                | uu___ ->
                     ({
                        network = (es1.network);
                        mode = Idle;
@@ -345,9 +345,6 @@ let step (es : effect_state) (ev : event) : (effect_state * command)=
          | uu___ -> (es, NoOp))
       else (es, NoOp)
   | uu___ -> Prims.admit ()
-type 'es mode_consistent = Obj.t
-type 'es retries_bounded = Obj.t
-type 'es inv = unit
 let init (version : Prims.nat) (m : model) : effect_state=
   {
     network = Online;

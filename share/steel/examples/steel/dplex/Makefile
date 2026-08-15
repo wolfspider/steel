@@ -1,70 +1,194 @@
 # ----- Config -----
 STEEL_HOME ?= ../../../../..
 
-FSTAR      ?= fstar.exe
+FSTAR_EXE  ?= fstar.exe
 OCAMLFIND  ?= ocamlfind
 OCAMLC     ?= ocamlc
 
-# Make sure F* can find your files + Steel; don't mark PingPongTest as cached
-FSTAR_OPTIONS := --include . --include .. --already_cached '*,-PingPongTest'
+# Extra paths for this project.
+# Do NOT add --already_cached for our own modules.
+FSTAR_OPTIONS := --include . --include ..
 
-# Bring in Steel’s rules (adds include paths, etc.)
+# Steel adds:
+#   --cache_checked_modules
+#   --already_cached 'Prims,FStar,LowStar,Steel,C'
+#   --include $(STEEL_HOME)/lib/steel
+#   --load_cmxs steel
+#
+# It also defines .checked dependency rules and the "verify" target.
 include $(STEEL_HOME)/share/steel/Makefile.include
 
-CACHE_DIR := .fstar_cache
+# ----- Project modules -----
+FST_SRCS := \
+	Trees.fst \
+	Selectors.Tree.Core.fst \
+	Selectors.Tree.fst \
+	Model.fst \
+	Domain.fst \
+	MultiCollaboration.fst \
+	EffectStateMachine.fst \
+	EffectSystemProperties.fst \
+	RealTimeCollaboration.fst \
+	LeaderCluster.fst \
+	PingPongTest.fst
 
 # ----- Phonies -----
-.PHONY: all check ml build run clean clean-local
+.PHONY: all check ml build run clean-local
 
 all: run
 
-# 0) Ensure dirs exist
 out:
 	mkdir -p out
-$(CACHE_DIR):
-	mkdir -p $(CACHE_DIR)
 
-# 1) CHECK: verify PingPongTest first (fills cache)
-check: $(CACHE_DIR)/.stamp
-$(CACHE_DIR)/.stamp: PingPongTest.fst | $(CACHE_DIR)
-	$(FSTAR) $(FSTAR_OPTIONS) --cache_dir $(CACHE_DIR) --cache_checked_modules PingPongTest.fst
-	@touch $@
+# ------------------------------------------------------------
+# 1) VERIFY
+#
+# Use Steel's own verification machinery.
+#
+# Makefile.include automatically includes all *.fst/*.fsti files
+# in the current directory in FSTAR_FILES and builds the .checked
+# dependency graph.
+# ------------------------------------------------------------
 
-# 2) EXTRACT: now that it's checked, extract to OCaml
+check: verify
+
+# ------------------------------------------------------------
+# 2) EXTRACT
+#
+# All project files have already been verified before extraction.
+# The .checked files now exist where F* expects them.
+# ------------------------------------------------------------
+
 ml: out/.ml.stamp
-out/.ml.stamp: PingPongTest.fst check | out
-	$(FSTAR) $(FSTAR_OPTIONS) --cache_dir $(CACHE_DIR) --cache_checked_modules \
-	  --codegen OCaml --odir out PingPongTest.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Trees.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Selectors.Tree.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Selectors.Tree.Core.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Model.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out Domain.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out MultiCollaboration.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out EffectStateMachine.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out EffectSystemProperties.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out RealTimeCollaboration.fst
-	$(FSTAR) $(FSTAR_OPTIONS) --codegen OCaml --odir out LeaderCluster.fst
+
+out/.ml.stamp: check $(FST_SRCS) | out
+	@set -e; \
+	for f in $(FST_SRCS); do \
+		echo "== EXTRACT $$f =="; \
+		$(FSTAR_EXE) $(FSTAR_OPTIONS) $(COMPAT_INDEXED_EFFECTS) \
+			--codegen OCaml \
+			--odir out \
+			$$f; \
+	done
+
 	@printf '%s\n' \
-'let () =' \
-'  print_endline "PingPongTest extracted (OCaml)";' \
-> out/Main.ml
+	'let () =' \
+	'  print_endline "PingPongTest extracted (OCaml)";' \
+	> out/Main.ml
+
 	@touch $@
 
-# 3) Build the bytecode exe from everything in out/
-OCAML_SRCS := $(wildcard out/*.ml)
-OCAML_CMOS := $(patsubst out/%.ml,out/%.cmo,$(OCAML_SRCS))
+# ------------------------------------------------------------
+# 3) Build extracted OCaml
+# ------------------------------------------------------------
+
+OCAML_SRCS = $(wildcard out/*.ml)
+OCAML_CMOS = $(patsubst out/%.ml,out/%.cmo,$(OCAML_SRCS))
 
 out/%.cmo: out/%.ml
-	$(OCAMLFIND) $(OCAMLC) -package fstarlib -linkpkg -I out -c $< -o $@
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c $< \
+		-o $@
 
-build: ml $(OCAML_CMOS)
-	$(OCAMLFIND) $(OCAMLC) -package fstarlib -linkpkg -I out $(OCAML_CMOS) -o pingpong_ml.byte
+build: ml
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/Trees.ml \
+		-o out/Trees.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/Selectors_Tree_Core.ml \
+		-o out/Selectors_Tree_Core.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/Selectors_Tree.ml \
+		-o out/Selectors_Tree.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/Model.ml \
+		-o out/Model.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/Domain.ml \
+		-o out/Domain.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/MultiCollaboration.ml \
+		-o out/MultiCollaboration.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/EffectStateMachine.ml \
+		-o out/EffectStateMachine.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/EffectSystemProperties.ml \
+		-o out/EffectSystemProperties.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/RealTimeCollaboration.ml \
+		-o out/RealTimeCollaboration.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/LeaderCluster.ml \
+		-o out/LeaderCluster.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/PingPongTest.ml \
+		-o out/PingPongTest.cmo
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		-c out/Main.ml \
+		-o out/Main.cmo
+
+	$(OCAMLFIND) $(OCAMLC) \
+		-package fstarlib \
+		-linkpkg \
+		-I out \
+		out/Trees.cmo \
+		out/Selectors_Tree_Core.cmo \
+		out/Selectors_Tree.cmo \
+		out/Model.cmo \
+		out/Domain.cmo \
+		out/MultiCollaboration.cmo \
+		out/EffectStateMachine.cmo \
+		out/EffectSystemProperties.cmo \
+		out/RealTimeCollaboration.cmo \
+		out/LeaderCluster.cmo \
+		out/PingPongTest.cmo \
+		out/Main.cmo \
+		-o pingpong_ml.byte
 
 run: build
 	./pingpong_ml.byte
 
-# Clean
 clean:: clean-local
+
 clean-local:
-	rm -rf out pingpong_ml.byte $(CACHE_DIR)
+	rm -rf out pingpong_ml.byte

@@ -84,20 +84,20 @@ let uu___is_FVNat (projectee : field_value) : Prims.bool=
 let __proj__FVNat__item___0 (projectee : field_value) : Prims.nat=
   match projectee with | FVNat _0 -> _0
 type model = (field_key, field_value) Trees.kv_tree
-let bucket : Prims.nat= (Prims.parse_int "1000000")
+let bucket : Prims.nat= Prims.of_int 1000000
 let field_key_to_int (k : field_key) : Prims.int=
   match k with
   | FKSpace -> Prims.int_zero
   | FKOwner -> Prims.int_one
-  | FKMembers -> (Prims.of_int (2))
-  | FKLists -> (Prims.of_int (3))
-  | FKListName lid -> (Prims.parse_int "4000000") + lid
-  | FKTask tid -> (Prims.parse_int "5000000") + tid
-  | FKTaskData tid -> (Prims.parse_int "6000000") + tid
-  | FKTag gid -> (Prims.parse_int "7000000") + gid
-  | FKNextListId -> (Prims.parse_int "7999999")
-  | FKNextTaskId -> (Prims.parse_int "8999999")
-  | FKNextTagId -> (Prims.parse_int "9999999")
+  | FKMembers -> Prims.of_int 2
+  | FKLists -> Prims.of_int 3
+  | FKListName lid -> (Prims.of_int 4000000) + lid
+  | FKTask tid -> (Prims.of_int 5000000) + tid
+  | FKTaskData tid -> (Prims.of_int 6000000) + tid
+  | FKTag gid -> (Prims.of_int 7000000) + gid
+  | FKNextListId -> Prims.of_int 7999999
+  | FKNextTaskId -> Prims.of_int 8999999
+  | FKNextTagId -> Prims.of_int 9999999
 let cmp_field_key : field_key Trees.cmp=
   fun a b -> (field_key_to_int a) - (field_key_to_int b)
 let rec model_get (m : model) (k : field_key) :
@@ -155,7 +155,6 @@ let get_owner (m : model) : user_id=
   | FStar_Pervasives_Native.Some
       { Trees.key = uu___; Trees.payload = FVUser u;_} -> u
   | uu___ -> ""
-type 'm inv = unit
 let initial_owner : user_id= ""
 let init (uu___ : unit) : model=
   let m = Trees.Leaf in
@@ -236,8 +235,6 @@ let field_value_eqb (x : field_value) (y : field_value) : Prims.bool=
   | (FVString sx, FVString sy) -> sx = sy
   | (FVNat nx, FVNat ny) -> nx = ny
   | uu___ -> false
-type field_key_eqb_false_prop = unit
-type field_key_eqb_spec_prop = unit
 let rec list_str_eqb (xs : Prims.string Prims.list)
   (ys : Prims.string Prims.list) : Prims.bool=
   match (xs, ys) with
@@ -250,8 +247,6 @@ let rec list_nat_eqb (xs : Prims.nat Prims.list) (ys : Prims.nat Prims.list)
   | ([], []) -> true
   | (x::tl, y::tl2) -> (x = y) && (list_nat_eqb tl tl2)
   | uu___ -> false
-type field_value_eqb_sym_prop = unit
-type field_value_eqb_spec_prop = unit
 let rec model_eqb (x : model) (y : model) : Prims.bool=
   match (x, y) with
   | (Trees.Leaf, Trees.Leaf) -> true
@@ -261,7 +256,3 @@ let rec model_eqb (x : model) (y : model) : Prims.bool=
          && (model_eqb lx ly))
         && (model_eqb rx ry)
   | uu___ -> false
-type ('a, 'equals) symmetry = unit
-type ('a, 'equals) reflexivity = unit
-type ('a, 'equals) transitivity = unit
-type ('a, 'equals) reflexivity2 = unit

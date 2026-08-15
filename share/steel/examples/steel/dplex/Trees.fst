@@ -4,28 +4,33 @@ module M = FStar.Math.Lib
 
 #set-options "--fuel 1 --ifuel 1 --z3rlimit 20"
 
-(*** Type definitions *)
+(** Type definitions *)
 
-(**** The tree structure *)
+(** The tree structure *)
 
 type tree (a: Type) =
   | Leaf : tree a
-  | Node: data: a -> left: tree a -> right: tree a -> tree a
+  | Node : data:a -> left:tree a -> right:tree a -> tree a
 
-(**** Binary search trees *)
+(** Binary search trees *)
 
 type node_data (a b: Type) = {
   key: a;
   payload: b;
 }
 
-let kv_tree (a: Type) (b: Type) = tree (node_data a b)
+let kv_tree (a: Type) (b: Type) =
+  tree (node_data a b)
 
-type cmp (a: Type) = compare: (a -> a -> int){
-  squash (forall x. compare x x == 0) /\
-  squash (forall x y. compare x y > 0 <==> compare y x < 0) /\
-  squash (forall x y z. compare x y >= 0 /\ compare y z >= 0 ==> compare x z >= 0)
-}
+type cmp (a: Type) =
+  compare:(a -> a -> int) {
+    (forall x. compare x x == 0) /\
+    (forall x y. compare x y > 0 <==> compare y x < 0) /\
+    (forall x y z.
+       compare x y >= 0 /\
+       compare y z >= 0
+       ==> compare x z >= 0)
+  }
 
 let rec forall_keys (#a: Type) (t: tree a) (cond: a -> bool) : bool =
   match t with
