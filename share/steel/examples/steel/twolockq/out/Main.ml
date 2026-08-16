@@ -1,7 +1,8 @@
 (* out/Main.ml — thread-based stress harness for TwoLockQueue *)
 module Q = TwoLockQueue
+module Thread = JSThread
 
-let () =
+let main () =
   (* ---- knobs ---- *)
   let producers = 1 in
   let consumers =
@@ -83,3 +84,6 @@ let () =
     total elapsed (float total /. elapsed);
   Printf.printf "min=%d  max=%d  avg=%.1f  imbalance=%.1f%%%%\n%!"
     minc maxc avg imbalance
+
+let () =
+  Thread.run main

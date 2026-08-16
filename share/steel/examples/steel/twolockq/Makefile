@@ -1,16 +1,16 @@
-# Use Steel’s workspace and F*’s ocamlenv wrapper so dune can find fstar.lib
 STEEL_HOME ?= ../../../../..
 
-.PHONY: all build run clean
+.PHONY: all build byte run clean
 
 all: run
 
-# Keep the include so $(FSTAR_EXE) is set
 include $(STEEL_HOME)/share/steel/Makefile.include
 
-# Build the already-extracted OCaml in ./out with dune (bytecode is fine)
 build: dune out/Main.ml out/TwoLockQueue.ml out/TwoLockQueueTest.ml
-	$(FSTAR_EXE) --ocamlenv dune build
+	$(FSTAR_EXE) --ocamlenv dune build Main.exe
+
+byte: dune out/Main.ml out/TwoLockQueue.ml out/TwoLockQueueTest.ml
+	$(FSTAR_EXE) --ocamlenv dune build Main.bc
 
 run: build
 	_build/default/Main.exe
