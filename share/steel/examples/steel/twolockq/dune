@@ -10,7 +10,7 @@
 
   (js_of_ocaml
     (flags (:standard --enable effects))
-    (javascript_files thread_runtime.js))
+    (javascript_files thread_runtime.scheduler.js))
 )
 
 (env
